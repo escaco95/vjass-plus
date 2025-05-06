@@ -1,5 +1,7 @@
 # vjass-plus
-a vJASS DSL
+a vJASS+ -> vJASS converter
+
+`python vjassp.py 'somepath\script.j'`
 
 ## vJass+ Form
 
