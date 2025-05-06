@@ -1,12 +1,27 @@
 # vjass-plus
 a vJASS+ -> vJASS converter
 
-`python vjassp.py 'somepath\script.j'`
+`python vjassp.py 'somepath\script.jp'`
+
+## Supports
+
+**Make simple. Keep jass'n**
+
+- Indent based syntax
+- Anonymous scope (content)
+- Anonymous multi initializer
+- local variable hoisting
+- omittable call, set
+- simplified function declacation
 
 ## vJass+ Form
 
 ```
+# this is single line comment
 library tick:
+    """
+    This is multi-line comment
+    """
 
     integer     INITIAL_TICK_INSTANCES  = 1000
     hashtable   TABLE                   = {}
