@@ -466,6 +466,42 @@ def processContent(env: ProcessEnvironment) -> None:
 tokenProcessors.append(processContent)
 
 """
+:::::::::'##::: ##::::'###::::'########:'####:'##::::'##:'########:
+::::::::: ###:: ##:::'## ##:::... ##..::. ##:: ##:::: ##: ##.....::
+::::::::: ####: ##::'##:. ##::::: ##::::: ##:: ##:::: ##: ##:::::::
+'#######: ## ## ##:'##:::. ##:::: ##::::: ##:: ##:::: ##: ######:::
+........: ##. ####: #########:::: ##::::: ##::. ##:: ##:: ##...::::
+::::::::: ##:. ###: ##.... ##:::: ##::::: ##:::. ## ##::: ##:::::::
+::::::::: ##::. ##: ##:::: ##:::: ##::::'####:::. ###:::: ########:
+:::::::::..::::..::..:::::..:::::..:::::....:::::...:::::........::
+"""
+
+
+def processNative(env: ProcessEnvironment) -> None:
+    for sourceLine in env.sourceLines:
+        # native statement
+        match = re.match(
+            r'^(?P<indent> *)native\s+(?P<name>[a-zA-Z][a-zA-Z0-9_]*)\s*\((?P<takes>[^)]*)\)(?:\s*->\s*(?P<returns>\w+))?\s*$', sourceLine['line'])
+        if match:
+            nativeIndent = match.group('indent')
+            nativeTakes = match.group('takes')
+            if not nativeTakes:
+                nativeTakes = 'nothing'
+            nativeReturns = match.group('returns')
+            if not nativeReturns:
+                nativeReturns = 'nothing'
+
+            env.nextLines.append(
+                {'tags': {'native': True}, 'line': f'{nativeIndent}native {match.group("name")} takes {nativeTakes} returns {nativeReturns}'})
+            continue
+
+        # anything else
+        env.nextLines.append(sourceLine)
+
+
+tokenProcessors.append(processNative)
+
+"""
 :::::::::'########:'##::::'##:'##::: ##::'######::'########:'####::'#######::'##::: ##:
 ::::::::: ##.....:: ##:::: ##: ###:: ##:'##... ##:... ##..::. ##::'##.... ##: ###:: ##:
 ::::::::: ##::::::: ##:::: ##: ####: ##: ##:::..::::: ##::::: ##:: ##:::: ##: ####: ##:
