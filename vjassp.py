@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Convert vJASS+ into vJASS code
-Version: 3.0
+Version: 3.01
 """
 
 import os
@@ -10,6 +10,19 @@ import re
 import sys
 import uuid
 
+class DslSyntaxError(Exception):
+    """
+    Exception raised for syntax errors in the DSL.
+    """
+    def __init__(self, filePath, lineNumber, lineText, message):
+        super().__init__(message)
+        self.filePath = filePath
+        self.lineNumber = lineNumber
+        self.lineText = lineText
+        self.message = message
+    
+    def __str__(self):
+        return f'File "{self.filePath}", line {self.lineNumber}\n{self.message}'
 
 def generateUUID():
     """
@@ -91,10 +104,17 @@ def compile():
                 env.sourceLines = [{'tags': {}, 'line': sourceLine}
                                    for sourceLine in file.read().splitlines()]
 
-            for tokenProcessor in tokenProcessors:
-                env.nextLines = []
-                tokenProcessor(env)
-                env.sourceLines = env.nextLines
+            try:
+                for tokenProcessor in tokenProcessors:
+                    env.nextLines = []
+                    tokenProcessor(env)
+                    env.sourceLines = env.nextLines
+            except DslSyntaxError as e:
+                print(f'Syntax Error (most recent call last):')
+                print(f'  {e}')
+                sys.exit(1)
+            except Exception as e:
+                raise e
 
             # mark as compiled
             for sourceLine in env.sourceLines:
@@ -164,7 +184,7 @@ tokenProcessors.append(processComment)
 
 
 def processImport(env: ProcessEnvironment) -> None:
-    for sourceLine in env.sourceLines:
+    for sourceCursor, sourceLine in enumerate(env.sourceLines):
         # single-line import statement
         match = re.match(
             r'^\s*(?:when\s+(?P<when>[a-zA-Z0-9_.-]+)\s+)?import\s+(?P<import>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)\s*$', sourceLine['line'])
@@ -180,6 +200,11 @@ def processImport(env: ProcessEnvironment) -> None:
                 os.path.dirname(env.sourcePath), importPath)
             importPath = normalizePath(importPath) + '.jp'
             if importPath not in env.sourceGroup:
+                # if file not exists, raise syntax error
+                if not os.path.exists(importPath):
+                    raise DslSyntaxError(
+                        env.sourcePath, sourceCursor + 1, sourceLine, f'No such File "{importPath}"')
+                # add to the source group
                 env.sourceGroup[importPath] = {
                     'compiled': False,
                 }
