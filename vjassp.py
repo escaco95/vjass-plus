@@ -10,10 +10,11 @@ import re
 import sys
 import uuid
 
-# generate 16 width uppercase UUID
-
 
 def generateUUID():
+    """
+    Generate a 16 width uppercase UUID.
+    """
     return str(uuid.uuid4()).replace('-', '').upper()[:16]
 
 
@@ -30,17 +31,25 @@ class ProcessEnvironment:
         self.sourceGroup = {}
         self.sourceLines = []
         self.nextLines = []
+        self.arguments = {}
         self.sourcePath = None
+
+    def containsArgument(self, argument: str) -> bool:
+        return argument in self.arguments and self.arguments[argument] is not None
 
 
 def compile():
     # if there is no argument, print usage
     if len(sys.argv) < 2:
         print("Usage: python vjassp.py <source_path>")
+        print("Usage: python vjassp.py <source_path> DEBUG REFORGED JN")
         sys.exit(1)
 
-    # get the source path from the argument
+    # use the first argument as the source path
     entryPath = normalizePath(sys.argv[1])
+
+    # use other arguments as the options tag
+    options = sys.argv[2:]
 
     # Step 1: Initialize the source group
     env = ProcessEnvironment()
@@ -49,6 +58,21 @@ def compile():
             'compiled': False,
         }
     }
+    env.arguments = {}
+    for option in options:
+        # if option format is a=b, split it into a and b
+        if '=' in option:
+            option = option.split('=')
+            # option name is option[0], option value is other parts joined by '='
+            env.arguments[option[0]] = '='.join(option[1:])
+        else:
+            # else, set the option as True
+            env.arguments[option] = True
+
+    # print env
+    print(f'Environment:')
+    print(f'  Source Path: "{entryPath}"')
+    print(f'  Arguments: {env.arguments}')
 
     # Step 2: Compile until all source files are compiled
     finalLines = []
@@ -76,6 +100,11 @@ def compile():
             for sourceLine in env.sourceLines:
                 finalLines.append(sourceLine['line'])
             env.sourceGroup[sourcePath]['compiled'] = True
+
+    # print post compile environment
+    print('  Imported files:')
+    for index, importPath in enumerate(env.sourceGroup.keys()):
+        print(f'    File "{importPath}" ({index + 1})')
 
     # write the final text to a file with same directory with .j extension
     finalPath = os.path.splitext(entryPath)[0] + '.j'
@@ -138,9 +167,15 @@ def processImport(env: ProcessEnvironment) -> None:
     for sourceLine in env.sourceLines:
         # single-line import statement
         match = re.match(
-            r'^\s*import\s+([a-zA-Z0-9_-][a-zA-Z0-9_.-]*)\s*$', sourceLine['line'])
+            r'^\s*(?:when\s+(?P<when>[a-zA-Z0-9_.-]+)\s+)?import\s+(?P<import>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)\s*$', sourceLine['line'])
         if match:
-            importPath = match.group(1).replace('.', '/')
+            # check when statement
+            importWhen = match.group('when')
+            if importWhen is not None and not env.containsArgument(importWhen):
+                # if when statement is not in arguments, skip this import statement
+                continue
+
+            importPath = match.group('import').replace('.', '/')
             importPath = os.path.join(
                 os.path.dirname(env.sourcePath), importPath)
             importPath = normalizePath(importPath) + '.jp'
