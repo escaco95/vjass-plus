@@ -2,7 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 Convert vJASS+ into vJASS code
-Version: 3.01
+Version: 3.02
+
+Change Log:
+- 3.02: Added mass import (.*/.**) syntax
 """
 
 import os
@@ -187,7 +190,7 @@ def processImport(env: ProcessEnvironment) -> None:
     for sourceCursor, sourceLine in enumerate(env.sourceLines):
         # single-line import statement
         match = re.match(
-            r'^\s*(?:when\s+(?P<when>[a-zA-Z0-9_.-]+)\s+)?import\s+(?P<import>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)\s*$', sourceLine['line'])
+            r'^\s*(?:when\s+(?P<when>[a-zA-Z0-9_.-]+)\s+)?import\s+(?P<import>[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*)(?P<mass>\.\*\*?)?\s*$', sourceLine['line'])
         if match:
             # check when statement
             importWhen = match.group('when')
@@ -198,16 +201,59 @@ def processImport(env: ProcessEnvironment) -> None:
             importPath = match.group('import').replace('.', '/')
             importPath = os.path.join(
                 os.path.dirname(env.sourcePath), importPath)
-            importPath = normalizePath(importPath) + '.jp'
-            if importPath not in env.sourceGroup:
-                # if file not exists, raise syntax error
-                if not os.path.exists(importPath):
+            importPath = normalizePath(importPath)
+            
+            importPaths = []
+            # if not mass import, add .jp extension
+            importMass = match.group('mass')
+            if importMass is None:
+                importPath += '.jp'
+                importPaths.append(importPath)
+            else:
+                # if directory not exists, raise syntax error
+                if not os.path.isdir(importPath):
                     raise DslSyntaxError(
-                        env.sourcePath, sourceCursor + 1, sourceLine, f'No such File "{importPath}"')
-                # add to the source group
-                env.sourceGroup[importPath] = {
-                    'compiled': False,
-                }
+                        env.sourcePath, sourceCursor + 1, sourceLine, f'No such Directory "{importPath}"')
+                # if mass import, and mass option is .*, add all files in the directory
+                if importMass == '.*':
+                    for root, dirs, files in os.walk(importPath):
+                        for file in files:
+                            if file.endswith('.jp'):
+                                # remove .jp extension
+                                file = file[:-3]
+                                # normalize path
+                                file = normalizePath(os.path.join(root,file))
+                                # append .jp extension
+                                file += '.jp'
+                                importPaths.append(file)
+                elif importMass == '.**':
+                    # double star import = recursive import
+                    recursiveDirs = [importPath]
+                    while recursiveDirs:
+                        currentDir = recursiveDirs.pop()
+                        for root, dirs, files in os.walk(currentDir):
+                            for file in files:
+                                if file.endswith('.jp'):
+                                    # remove .jp extension
+                                    file = file[:-3]
+                                    # normalize path
+                                    file = normalizePath(os.path.join(root,file))
+                                    # append .jp extension
+                                    file += '.jp'
+                                    importPaths.append(file)
+                            # add subdirs to the list
+                            for dir in dirs:
+                                recursiveDirs.append(os.path.join(root, dir))
+            for importPath in importPaths:
+                if importPath not in env.sourceGroup:
+                    # if file not exists, raise syntax error
+                    if not os.path.exists(importPath):
+                        raise DslSyntaxError(
+                            env.sourcePath, sourceCursor + 1, sourceLine, f'No such File "{importPath}"')
+                    # add to the source group
+                    env.sourceGroup[importPath] = {
+                        'compiled': False,
+                    }
             continue
         # anything else
         env.nextLines.append(sourceLine)
