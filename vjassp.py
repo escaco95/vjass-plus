@@ -2,7 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 Convert vJASS+ into vJASS code
-Version: 3.10
+Python Version: 3.12
+vJASS+ Version: 3.10
+
+Author: choi-sw (escaco95@naver.com)
 
 Change Log:
 - 3.10: Added f-string (f"{}") support
@@ -10,6 +13,7 @@ Change Log:
 - 3.03: Added modifier block (api:/global:) syntax
 - 3.02: Added mass import (.*/.**) syntax
   - 3.021: Fixed variable syntax regex including library/scope/content
+- 3.00: Initial release
 """
 
 import os
