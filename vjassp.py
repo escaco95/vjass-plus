@@ -2,10 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 Convert vJASS+ into vJASS code
-Version: 3.02
+Version: 3.021
 
 Change Log:
 - 3.02: Added mass import (.*/.**) syntax
+  - 3.021: Fixed variable syntax regex including library/scope/content
 """
 
 import os
@@ -697,7 +698,7 @@ def processVariable(env: ProcessEnvironment) -> None:
         # variable statement
         match = re.match(
             r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?(?P<type>[a-zA-Z][a-zA-Z0-9]*)\s+(?P<let>\*)?(?P<name>[a-zA-Z][a-zA-Z0-9_]*)(?:\s*=\s*(?P<value>.*?))?\s*$', sourceLine['line'])
-        if match and not re.match(r'\b(return|if|elseif)\b', match.group('type')):
+        if match and not re.match(r'\b(library|scope|content|return|if|elseif|else|loop|while|until)\b', match.group('type')):
             variableIndent = match.group('indent')
             variableModifier = match.group('modifier')
             if variableModifier == 'api':
