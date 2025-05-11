@@ -3,12 +3,14 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.11
+vJASS+ Version: 3.12
 
 Author: choi-sw (escaco95@naver.com)
 
 Change Log:
+- 3.12: Added break keyword support
 - 3.11: Added in-line comment support
+  - 3.111: fixed parser failure on exitwhen keyword
 - 3.10: Added f-string (f"{}") support
   - 3.101: Changed token processing algorithm, generates EOF empty line gracefully
   - 3.102: Fixed parser failure on excessive spaces after function colon
@@ -846,7 +848,7 @@ class TokenVariable:
             # variable statement
             match = re.match(
                 r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?(?P<type>[a-zA-Z][a-zA-Z0-9]*)\s+(?P<let>\*)?(?P<name>[a-zA-Z][a-zA-Z0-9_]*)(?:\s*=\s*(?P<value>.*?))?\s*$', sourceLine['line'])
-            if match and not re.match(r'\b(library|system|scope|content|return|if|elseif|else|loop|while|until)\b', match.group('type')):
+            if match and not re.match(r'\b(library|system|scope|content|return|if|elseif|else|loop|while|until|exitwhen)\b', match.group('type')):
                 variableIndent = match.group('indent')
                 variableModifier = sourceLine['tags'].get('modifier', None)
                 if variableModifier is None:
@@ -1045,6 +1047,15 @@ class TokenLoops:
                             continue
                         else:
                             break
+
+            # match break statement
+            match = re.match(
+                r'^(?P<indent> *)break\s*$', sourceLine['line'])
+            if match:
+                # replace with 'exitwhen true'
+                env.nextLines.append(
+                    {'tags': sourceLine['tags'], 'line': f'{match.group("indent")}exitwhen true'})
+                continue
 
             # anything else
             env.nextLines.append(sourceLine)
