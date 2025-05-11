@@ -2,9 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 Convert vJASS+ into vJASS code
-Version: 3.021
+Version: 3.10
 
 Change Log:
+- 3.10: Added f-string (f"{}") support
+- 3.04: Added system block (system:) syntax
+- 3.03: Added modifier block (api:/global:) syntax
 - 3.02: Added mass import (.*/.**) syntax
   - 3.021: Fixed variable syntax regex including library/scope/content
 """
@@ -49,6 +52,8 @@ class ProcessEnvironment:
         self.sourceLines = []
         self.nextLines = []
         self.arguments = {}
+        self.libraries = []
+        self.systems = []
         self.sourcePath = None
 
     def containsArgument(self, argument: str) -> bool:
@@ -124,6 +129,15 @@ def compile():
             for sourceLine in env.sourceLines:
                 finalLines.append(sourceLine['line'])
             env.sourceGroup[sourcePath]['compiled'] = True
+
+    # perform post complie features
+    if env.systems:
+        # if there is any system, add the system library
+        if env.libraries:
+            finalLines.append(f'library VJPLIBS requires {", ".join(env.libraries)}')
+        else:
+            finalLines.append(f'library VJPLIBS')
+        finalLines.append(f'endlibrary')
 
     # print post compile environment
     print('  Imported files:')
@@ -263,6 +277,70 @@ def processImport(env: ProcessEnvironment) -> None:
 tokenProcessors.append(processImport)
 
 """
+::::::::::'######:::'##::::::::'#######::'########:::::'###::::'##:::::::::::::'##::::'###::::'########::'####:
+:::::::::'##... ##:: ##:::::::'##.... ##: ##.... ##:::'## ##::: ##::::::::::::'##::::'## ##::: ##.... ##:. ##::
+::::::::: ##:::..::: ##::::::: ##:::: ##: ##:::: ##::'##:. ##:: ##:::::::::::'##::::'##:. ##:: ##:::: ##:: ##::
+'#######: ##::'####: ##::::::: ##:::: ##: ########::'##:::. ##: ##::::::::::'##::::'##:::. ##: ########::: ##::
+........: ##::: ##:: ##::::::: ##:::: ##: ##.... ##: #########: ##:::::::::'##::::: #########: ##.....:::: ##::
+::::::::: ##::: ##:: ##::::::: ##:::: ##: ##:::: ##: ##.... ##: ##::::::::'##:::::: ##.... ##: ##::::::::: ##::
+:::::::::. ######::: ########:. #######:: ########:: ##:::: ##: ########:'##::::::: ##:::: ##: ##::::::::'####:
+::::::::::......::::........:::.......:::........:::..:::::..::........::..::::::::..:::::..::..:::::::::....::
+"""
+
+def processModifierBlock(env: ProcessEnvironment) -> None:
+    """
+    Process modifier block
+    -- global:
+    -- api:
+    """
+    blockTokenInfoStack = []
+    for sourceCursor, sourceLine in enumerate(env.sourceLines):
+        # if blockTokenInfoStack is not empty and..
+        # current indent level is less than or equal to the last blockTokenInfoStack indent level
+        # pop stack until the indent level is less than current indent level
+        while blockTokenInfoStack:
+            blockTokenInfo = blockTokenInfoStack[-1]
+            match = re.match(r'^(?P<indent> *)', sourceLine['line'])
+            indentLevel = len(match.group('indent')) // 4
+            if indentLevel <= blockTokenInfo['indentLevel']:
+                blockTokenInfoStack.pop()
+            else:
+                break
+
+        # when match global or api block
+        # add token info to stack
+        match = re.match(
+            r'^(?P<indent> *)(?P<modifier>api|global)\s*:\s*$', sourceLine['line'])
+        if match:
+            blockTokenInfo = {
+                'indentLevel': len(match.group('indent')) // 4,
+                'cursor': len(env.nextLines),
+                'modifier': match.group('modifier'),
+            }
+            blockTokenInfoStack.append(blockTokenInfo)
+            continue
+
+        # anything else
+        # add the modifier tag to the line if blockTokenInfoStack is not empty
+        if blockTokenInfoStack:
+            sourceLine['tags']['modifier'] = blockTokenInfoStack[-1]['modifier']
+            # make 1 level less indent
+            match = re.match(r'^(?P<indent> *)', sourceLine['line'])
+            indentLevel = len(match.group('indent')) // 4
+            if indentLevel > 1:
+                env.nextLines.append(
+                    {'tags': sourceLine['tags'], 'line': f'{sourceLine["line"][4:]}'})
+            else:
+                env.nextLines.append(sourceLine)
+            continue
+            
+        # add the line to nextLines
+        env.nextLines.append(sourceLine)
+
+
+tokenProcessors.append(processModifierBlock)
+
+"""
 :::::::::'########:'##:::'##:'########::'########:
 :::::::::... ##..::. ##:'##:: ##.... ##: ##.....::
 :::::::::::: ##:::::. ####::: ##:::: ##: ##:::::::
@@ -276,19 +354,26 @@ tokenProcessors.append(processImport)
 
 
 def processType(env: ProcessEnvironment) -> None:
-    for sourceLine in env.sourceLines:
+    for sourceCursor, sourceLine in enumerate(env.sourceLines):
         # type statement
         match = re.match(
             r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?type\s+(?P<typeName>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)\s+extends\s+(?P<extends>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)\s*$', sourceLine['line'])
         if match:
             typeIndent = match.group('indent')
-            typeModifier = match.group('modifier')
+
+            typeModifier = sourceLine['tags'].get('modifier', None)
+            if typeModifier is None:
+                typeModifier = match.group('modifier')
+            elif match.group('modifier') is not None:
+                raise DslSyntaxError(
+                    env.sourcePath, sourceCursor, sourceLine['line'], f'Modifier tag already exists: {typeModifier} and {match.group("modifier")}')
             if typeModifier == 'api':
                 typeModifier = 'public '
             elif typeModifier == 'global':
                 typeModifier = ''
             else:
                 typeModifier = 'private '
+
             typeName = match.group('typeName')
             typeExtends = match.group('extends')
             if typeExtends == 'handle':
@@ -450,15 +535,22 @@ def processLibrary(env: ProcessEnvironment) -> None:
 
         # library statement
         match = re.match(
-            r'^(?P<indent> *)library\s+(?P<libraryName>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)\s*:\s*$', sourceLine['line'])
+            r'^(?P<indent> *)(?P<librarytype>library|system)\s+(?P<libraryName>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)\s*:\s*$', sourceLine['line'])
         if match:
+            libraryType = match.group('librarytype')
             libraryInfo = {
                 'indentLevel': len(match.group('indent')) // 4,
                 'cursor': len(env.nextLines),
                 'name': match.group('libraryName'),
+                'type': libraryType,
                 'inits': [],
                 'requires': [],
             }
+            if libraryType == 'library':
+                env.libraries.append(libraryInfo['name'])
+            elif libraryType == 'system':
+                env.systems.append(libraryInfo['name'])
+                libraryInfo['requires'].append('VJPLIBS')
             inLibrary = True
             continue
 
@@ -646,7 +738,12 @@ def processFunction(env: ProcessEnvironment) -> None:
             r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?(?P<name>[a-zA-Z][a-zA-Z0-9]*)\s*\((?P<takes>[^)]*)\)(?:\s*->\s*(?P<returns>\w+))?\s*:$', sourceLine['line'])
         if match:
             functionIndent = match.group('indent')
-            functionModifier = match.group('modifier')
+            functionModifier = sourceLine['tags'].get('modifier', None)
+            if functionModifier is None:
+                functionModifier = match.group('modifier')
+            elif match.group('modifier') is not None:
+                raise DslSyntaxError(
+                    env.sourcePath, sourceCursor, sourceLine['line'], f'Modifier tag already exists: {functionModifier} and {match.group("modifier")}')
             if functionModifier == 'api':
                 functionModifier = 'public '
             elif functionModifier == 'global':
@@ -698,9 +795,14 @@ def processVariable(env: ProcessEnvironment) -> None:
         # variable statement
         match = re.match(
             r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?(?P<type>[a-zA-Z][a-zA-Z0-9]*)\s+(?P<let>\*)?(?P<name>[a-zA-Z][a-zA-Z0-9_]*)(?:\s*=\s*(?P<value>.*?))?\s*$', sourceLine['line'])
-        if match and not re.match(r'\b(library|scope|content|return|if|elseif|else|loop|while|until)\b', match.group('type')):
+        if match and not re.match(r'\b(library|system|scope|content|return|if|elseif|else|loop|while|until)\b', match.group('type')):
             variableIndent = match.group('indent')
-            variableModifier = match.group('modifier')
+            variableModifier = sourceLine['tags'].get('modifier', None)
+            if variableModifier is None:
+                variableModifier = match.group('modifier')
+            elif match.group('modifier') is not None:
+                raise DslSyntaxError(
+                    env.sourcePath, sourceCursor, sourceLine['line'], f'Modifier tag already exists: {variableModifier} and {match.group("modifier")}')
             if variableModifier == 'api':
                 variableModifier = 'public '
             elif variableModifier == 'global':
@@ -1161,6 +1263,124 @@ def processHoisting(env: ProcessEnvironment) -> None:
 
 
 tokenProcessors.append(processHoisting)
+
+"""
+:::::::::'########::'######::'########:'########::'####:'##::: ##::'######:::
+::::::::: ##.....::'##... ##:... ##..:: ##.... ##:. ##:: ###:: ##:'##... ##::
+::::::::: ##::::::: ##:::..::::: ##:::: ##:::: ##:: ##:: ####: ##: ##:::..:::
+'#######: ######:::. ######::::: ##:::: ########::: ##:: ## ## ##: ##::'####:
+........: ##...:::::..... ##:::: ##:::: ##.. ##:::: ##:: ##. ####: ##::: ##::
+::::::::: ##:::::::'##::: ##:::: ##:::: ##::. ##::: ##:: ##:. ###: ##::: ##::
+::::::::: ##:::::::. ######::::: ##:::: ##:::. ##:'####: ##::. ##:. ######:::
+:::::::::..:::::::::......::::::..:::::..:::::..::....::..::::..:::......::::
+"""
+
+def processFormatStrings(env: ProcessEnvironment) -> None:
+    def find_fstring_spans(s):
+        """
+        문자열 s 내의 모든 f"…"/f'…' 리터럴의 (start, end) 인덱스를 반환.
+        중첩된 중괄호를 고려하여, 같은 따옴표가 중괄호 밖에서 닫힐 때까지 찾습니다.
+        """
+        spans = []
+        i = 0
+        while i < len(s) - 1:
+            if s[i] == 'f' and s[i+1] in ('"', "'"):
+                quote = s[i+1]
+                start = i
+                i += 2
+                depth = 0
+                while i < len(s):
+                    c = s[i]
+                    if c == '\\':       # 이스케이프 무시
+                        i += 2
+                        continue
+                    if c == '{':
+                        depth += 1
+                    elif c == '}':
+                        depth -= 1
+                    elif c == quote and depth == 0:
+                        end = i
+                        spans.append((start, end))
+                        break
+                    i += 1
+            else:
+                i += 1
+        return spans
+
+    def transform_fstring_simple(content):
+        """
+        f-string 내부 content 를 받아서
+        - 중괄호 {…}는 (…)
+        - 텍스트는 "…" 
+        형태로 분리한 뒤, '+' 로 이어 붙인 문자열을 반환.
+        """
+        # 1) 리터럴 중괄호 처리: '{{' → ESC_L, '}}' → ESC_R
+        ESC_L, ESC_R = '\x02', '\x03'
+        content = content.replace('{{', ESC_L).replace('}}', ESC_R)
+        segs = []
+        i = 0
+        while i < len(content):
+            if content[i] == '{':
+                # 중괄호에 대응하는 위치 찾기
+                depth = 1
+                j = i + 1
+                while j < len(content) and depth > 0:
+                    if content[j] == '{': depth += 1
+                    elif content[j] == '}': depth -= 1
+                    j += 1
+                expr = content[i+1:j-1].strip()
+                segs.append(f'({expr})')
+                i = j
+            else:
+                j = i
+                while j < len(content) and content[j] != '{':
+                    j += 1
+                lit = content[i:j].replace('"', r'\"')
+                # 2) ESC 토큰 복원
+                lit = lit.replace(ESC_L, '{').replace(ESC_R, '}')
+                if lit:
+                    segs.append(f'"{lit}"')
+                i = j
+
+        if not segs:
+            return '""'
+        return ' + '.join(segs)
+
+    def parse_fstring(s):
+        """
+        s에 f"…" 또는 f'…'가 남아 있는 동안,
+        find_fstring_spans 로 가장 짧은(=가장 안쪽) span 하나만 뽑아,
+        transform_fstring_simple 로 교체한 뒤 반복합니다.
+        최종적으로 f-string 이 전부 사라진 순수 문자열 연결식이 반환됩니다.
+        """
+        while True:
+            spans = find_fstring_spans(s)
+            if not spans:
+                break
+            # 가장 짧은 span(=중첩 깊이 가장 깊은) 하나 선택
+            spans.sort(key=lambda x: x[1]-x[0])
+            start, end = spans[0]
+            inner = s[start+2:end]            # 따옴표와 f 접두어 제외
+            replaced = transform_fstring_simple(inner)
+            # 바깥쪽 괄호는 맨 바깥 레벨에서만 제거하기 위해 계속 감싸두고,
+            # 마지막에 한 번 껍데기 괄호를 벗겨 줍니다.
+            s = s[:start] + f'({replaced})' + s[end+1:]
+        # 전체가 하나의 괄호로 감싸져 있으면 벗겨 주기
+        if s.startswith('(') and s.endswith(')'):
+            s = s[1:-1]
+        return s.replace('\\\\', '\\')
+    
+    for sourceCursor, sourceLine in enumerate(env.sourceLines):
+        # f-string 변환
+        processedLine = parse_fstring(sourceLine['line'])
+        if processedLine != sourceLine['line']:
+            env.nextLines.append(
+                {'tags': sourceLine['tags'], 'line': processedLine})
+        else:
+            env.nextLines.append(sourceLine)
+
+
+tokenProcessors.append(processFormatStrings)
 
 """
 '##::::'##::::'###::::'####:'##::: ##:
