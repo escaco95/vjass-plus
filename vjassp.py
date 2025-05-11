@@ -3,11 +3,12 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.12
+vJASS+ Version: 3.13
 
 Author: choi-sw (escaco95@naver.com)
 
 Change Log:
+- 3.13: Added multi-line in single line comment support
 - 3.12: Added break keyword support
 - 3.11: Added in-line comment support
   - 3.111: fixed parser failure on exitwhen keyword
@@ -219,6 +220,10 @@ class TokenComment:
                 multiCommentBlock = not multiCommentBlock
                 continue
             if multiCommentBlock:
+                continue
+            # multi-in-line comment
+            match = re.match(r'^\s*\"\"\".*?\"\"\"\s*$', sourceLineText)
+            if match:
                 continue
             # single-line comment
             match = re.match(r'^\s*#.*$', sourceLineText)
