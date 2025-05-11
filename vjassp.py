@@ -8,8 +8,10 @@ vJASS+ Version: 3.11
 Author: choi-sw (escaco95@naver.com)
 
 Change Log:
+- 3.11: Added in-line comment support
 - 3.10: Added f-string (f"{}") support
-  - 3.11: Changed token processing algorithm, generates EOF empty line gracefully
+  - 3.101: Changed token processing algorithm, generates EOF empty line gracefully
+  - 3.102: Fixed parser failure on excessive spaces after function colon
 - 3.04: Added system block (system:) syntax
 - 3.03: Added modifier block (api:/global:) syntax
 - 3.02: Added mass import (.*/.**) syntax
@@ -223,6 +225,13 @@ class TokenComment:
             # empty line
             match = re.match(r'^\s*$', sourceLineText)
             if match:
+                continue
+            # in-line comment
+            match = re.match(r'^(?P<code>.*?)(?P<comment>#[^\'\"]*)$', sourceLineText)
+            if match:
+                code = match.group('code')
+                env.nextLines.append(
+                    {'tags': sourceLine['tags'], 'line': code})
                 continue
             # anything else
             env.nextLines.append(sourceLine)
@@ -777,7 +786,7 @@ class TokenFunction:
 
             # function statement
             match = re.match(
-                r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?(?P<name>[a-zA-Z][a-zA-Z0-9]*)\s*\((?P<takes>[^)]*)\)(?:\s*->\s*(?P<returns>\w+))?\s*:$', sourceLine['line'])
+                r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?(?P<name>[a-zA-Z][a-zA-Z0-9]*)\s*\((?P<takes>[^)]*)\)(?:\s*->\s*(?P<returns>\w+))?\s*:\s*$', sourceLine['line'])
             if match:
                 functionIndent = match.group('indent')
                 functionModifier = sourceLine['tags'].get('modifier', None)
