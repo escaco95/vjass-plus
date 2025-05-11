@@ -7,6 +7,7 @@ a vJASS+ -> vJASS converter
 
 **Make simple. Keep jass'n**
 
+- conditional & mass import
 - Indent based syntax
 - Anonymous scope (content)
 - Anonymous multi initializer
