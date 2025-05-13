@@ -3,11 +3,17 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.13
+vJASS+ Version: 3.20
 
 Author: choi-sw (escaco95@naver.com)
 
 Change Log:
+- 3.20: Added macro block (macro myMacro:) support
+- 3.14: Added data block (data:) syntax
+  - 3.144: can omit type extends (default is array)
+  - 3.143: syntax error exactly picks the line number from now on
+  - 3.142: fixed redundant parenthesis creation in f-string
+  - 3.141: fixed compilation process, source-by-source to step-by-step
 - 3.13: Added multi-line in single line comment support
 - 3.12: Added break keyword support
 - 3.11: Added in-line comment support
@@ -34,15 +40,18 @@ class DslSyntaxError(Exception):
     Exception raised for syntax errors in the DSL.
     """
 
-    def __init__(self, filePath, lineNumber, lineText, message):
+    def __init__(self, filePath: str, lineCursor: int, lineText: str, message: str):
         super().__init__(message)
         self.filePath = filePath
-        self.lineNumber = lineNumber
+        self.lineCursor = lineCursor
         self.lineText = lineText
         self.message = message
 
     def __str__(self):
-        return f'File "{self.filePath}", line {self.lineNumber}\n{self.message}'
+        if self.lineCursor:
+            return f'File "{self.filePath}", line {self.lineCursor + 1}\n{self.message}'
+        else:
+            return f'File "{self.filePath}"\n{self.message}'
 
 
 def generateUUID():
@@ -59,12 +68,18 @@ def normalizePath(sourceFilePath):
 class ProcessEnvironment:
     def __init__(self):
         self.sourceGroup = {}
-        self.sourceLines = []
-        self.nextLines = []
+
         self.arguments = {}
         self.libraries = []
+        self.datalibs = []
         self.systems = []
+
+        self.macros = {}
+        # self.functions = {}
+
         self.sourcePath = None
+        self.sourceLines = []
+        self.nextLines = []
 
     def containsArgument(self, argument: str) -> bool:
         return argument in self.arguments and self.arguments[argument] is not None
@@ -98,6 +113,7 @@ def compile():
     # scan all classes in __file__ that contains static method process(env) function
     # and add them to the tokenProcessors list
     # get all classes in this file
+    preprocessors = []
     processors = []
     classes = [cls for name, cls in globals().items(
     ) if inspect.isclass(cls) and cls.__module__ == __name__]
@@ -106,12 +122,14 @@ def compile():
         for name, method in inspect.getmembers(cls, predicate=inspect.isfunction):
             if name == 'process' and method.__code__.co_argcount == 1:
                 processors.append(method)
+            elif name == 'preprocess' and method.__code__.co_argcount == 1:
+                preprocessors.append(method)
 
     # Step 1: Initialize the source group
     env = ProcessEnvironment()
     env.sourceGroup = {
         entryPath: {
-            'compiled': False,
+            'preprocessed': False
         }
     }
     env.arguments = {}
@@ -129,31 +147,34 @@ def compile():
     print(f'Environment:')
     print(f'  Source Path: "{entryPath}"')
     print(f'  Arguments: {env.arguments}')
+    print(f'  Preprocessors: {len(preprocessors)}')
+    for index, preprocessor in enumerate(preprocessors):
+        print(f'    {preprocessor.__qualname__}() ({index + 1})')
     print(f'  Processors: {len(processors)}')
     for index, processor in enumerate(processors):
         print(f'    {processor.__qualname__}() ({index + 1})')
 
-    # Step 2: Compile until all source files are compiled
-    finalLines = []
+    # Step 1.9: Preprocess all source files
     while True:
-        # Step 2.1: Find all source files that are not compiled
+        # Step 1.91: Find all source files that are not preprocessed
         sourceFiles = [path for path,
-                       info in env.sourceGroup.items() if not info['compiled']]
+                       info in env.sourceGroup.items() if not info.get('preprocessed', False)]
         if not sourceFiles:
             break
 
-        # Step 2.2: Compile each source file
+        # Step 1.92: Preprocess each source file
         for sourcePath in sourceFiles:
             env.sourcePath = sourcePath
             # Read the source file
             with open(sourcePath, 'r', encoding='utf-8') as file:
-                env.sourceLines = [{'tags': {}, 'line': sourceLine}
-                                   for sourceLine in file.read().splitlines()]
+                env.sourceLines = [{'tags': {}, 'cursor': sourceCursor, 'line': sourceLine}
+                                   for sourceCursor, sourceLine in enumerate(file.read().splitlines())]
 
+            # Preprocess each preprocessor
             try:
-                for tokenProcessor in processors:
+                for preprocessor in preprocessors:
                     env.nextLines = []
-                    tokenProcessor(env)
+                    preprocessor(env)
                     env.sourceLines = env.nextLines
             except DslSyntaxError as e:
                 print(f'Syntax Error (most recent call last):')
@@ -162,14 +183,52 @@ def compile():
             except Exception as e:
                 raise e
 
-            # mark as compiled
-            for sourceLine in env.sourceLines:
-                finalLines.append(sourceLine['line'])
-            env.sourceGroup[sourcePath]['compiled'] = True
+            # mark as preprocessed
+            env.sourceGroup[sourcePath]['preprocessed'] = True
+            env.sourceGroup[sourcePath]['sourcelines'] = env.sourceLines
+
+    # print post compile environment
+    print(f'  Imported files: {len(env.sourceGroup)}')
+    for index, importPath in enumerate(env.sourceGroup.keys()):
+        print(f'    File "{importPath}" ({index + 1})')
+    # print all macros
+    print(f'  Macros: {len(env.macros)}')
+    for index, macroName in enumerate(env.macros.keys()):
+        macroInfo = env.macros[macroName]
+        print(f'    {macroName} ({index + 1})')
+
+    # Step 2: Compile until all source files are compiled
+    sourceFiles = [path for path, info in env.sourceGroup.items()]
+    if sourceFiles:
+        # Step 2.1: compile each source file
+        for tokenProcessor in processors:
+            for sourcePath in sourceFiles:
+                env.sourcePath = sourcePath
+                env.sourceLines = env.sourceGroup[sourcePath]['sourcelines']
+
+                try:
+                    env.nextLines = []
+                    tokenProcessor(env)
+                    env.sourceLines = env.nextLines
+                except DslSyntaxError as e:
+                    print(f'Syntax Error (most recent call last):')
+                    print(f'  {e}')
+                    sys.exit(1)
+                except Exception as e:
+                    raise e
+
+                env.sourceGroup[sourcePath]['sourcelines'] = env.sourceLines
+
+    # Step 2.9: merge all source files into one
+    finalLines = []
+    for sourcePath in sourceFiles:
+        # add the source lines to the final lines
+        for sourceLine in env.sourceGroup[sourcePath]['sourcelines']:
+            finalLines.append(sourceLine['line'])
 
     # Step 3: Post compile
     # Step 3.1: resolve library and system block dependency
-    if env.systems:
+    if env.systems or env.datalibs:
         # if there is any system, add the system library
         if env.libraries:
             finalLines.append(
@@ -177,16 +236,19 @@ def compile():
         else:
             finalLines.append(f'library VJPLIBS')
         finalLines.append(f'endlibrary')
+    if env.systems:
+        # if there is any data, add the data library
+        if env.datalibs:
+            finalLines.append(
+                f'library VJPDATA requires {", ".join(env.datalibs)}')
+        else:
+            finalLines.append(f'library VJPDATA requires VJPLIBS')
+        finalLines.append(f'endlibrary')
 
     # Step 4: finalize the source file
     # Step 4.1: append empty line if the last line is not empty
     if not finalLines[-1].endswith('\n'):
         finalLines.append('')
-
-    # print post compile environment
-    print(f'  Imported files: {len(env.sourceGroup)}')
-    for index, importPath in enumerate(env.sourceGroup.keys()):
-        print(f'    File "{importPath}" ({index + 1})')
 
     # write the final text to a file with same directory with .j extension
     finalPath = os.path.splitext(entryPath)[0] + '.j'
@@ -210,7 +272,7 @@ def compile():
 
 class TokenComment:
     @staticmethod
-    def process(env: ProcessEnvironment) -> None:
+    def preprocess(env: ProcessEnvironment) -> None:
         multiCommentBlock = False
         for sourceLine in env.sourceLines:
             sourceLineText = sourceLine['line']
@@ -234,11 +296,12 @@ class TokenComment:
             if match:
                 continue
             # in-line comment
-            match = re.match(r'^(?P<code>.*?)(?P<comment>#[^\'\"]*)$', sourceLineText)
+            match = re.match(
+                r'^(?P<code>.*?)(?P<comment>#[^\'\"]*)$', sourceLineText)
             if match:
                 code = match.group('code')
                 env.nextLines.append(
-                    {'tags': sourceLine['tags'], 'line': code})
+                    {'tags': sourceLine['tags'], 'cursor': sourceLine['cursor'], 'line': code})
                 continue
             # anything else
             env.nextLines.append(sourceLine)
@@ -258,7 +321,7 @@ class TokenComment:
 
 class TokenImport:
     @staticmethod
-    def process(env: ProcessEnvironment) -> None:
+    def preprocess(env: ProcessEnvironment) -> None:
         for sourceCursor, sourceLine in enumerate(env.sourceLines):
             # single-line import statement
             match = re.match(
@@ -285,7 +348,7 @@ class TokenImport:
                     # if directory not exists, raise syntax error
                     if not os.path.isdir(importPath):
                         raise DslSyntaxError(
-                            env.sourcePath, sourceCursor + 1, sourceLine, f'No such Directory "{importPath}"')
+                            env.sourcePath, sourceLine['cursor'], sourceLine, f'No such Directory "{importPath}"')
                     # if mass import, and mass option is .*, add all files in the directory
                     if importMass == '.*':
                         for root, dirs, files in os.walk(importPath):
@@ -324,12 +387,237 @@ class TokenImport:
                         # if file not exists, raise syntax error
                         if not os.path.exists(importPath):
                             raise DslSyntaxError(
-                                env.sourcePath, sourceCursor + 1, sourceLine, f'No such File "{importPath}"')
+                                env.sourcePath, sourceLine['cursor'], sourceLine, f'No such File "{importPath}"')
                         # add to the source group
                         env.sourceGroup[importPath] = {
-                            'compiled': False,
+                            'preprocessed': False,
                         }
                 continue
+            # anything else
+            env.nextLines.append(sourceLine)
+
+
+"""
+:::::::::'##::::'##::::'###:::::'######::'########:::'#######::
+::::::::: ###::'###:::'## ##:::'##... ##: ##.... ##:'##.... ##:
+::::::::: ####'####::'##:. ##:: ##:::..:: ##:::: ##: ##:::: ##:
+'#######: ## ### ##:'##:::. ##: ##::::::: ########:: ##:::: ##:
+........: ##. #: ##: #########: ##::::::: ##.. ##::: ##:::: ##:
+::::::::: ##:.:: ##: ##.... ##: ##::: ##: ##::. ##:: ##:::: ##:
+::::::::: ##:::: ##: ##:::: ##:. ######:: ##:::. ##:. #######::
+:::::::::..:::::..::..:::::..:::......:::..:::::..:::.......:::
+"""
+
+
+class TokenMacro:
+    @staticmethod
+    def preprocess(env: ProcessEnvironment) -> None:
+        codeBlockInfoStack = []
+        for sourceLine in env.sourceLines:
+            # if code block stack is not empty and this line have same or less indent level
+            # pop stack until the indent level is less than current indent level
+            while codeBlockInfoStack:
+                codeBlockInfo = codeBlockInfoStack[-1]
+                match = re.match(r'^(?P<indent> *)', sourceLine['line'])
+                indentLevel = len(match.group('indent')) // 4
+                if indentLevel <= codeBlockInfo['indentLevel']:
+                    codeBlockInfoStack.pop()
+                else:
+                    break
+
+            # match macro-definable block (library/data/system/content)
+            # for content, block may be anonymous
+            match = re.match(
+                r'^(?P<indent> *)(?P<blocktype>library|data|system|content)(?:\s+(?P<blockName>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*))?\s*:\s*$', sourceLine['line'])
+            if match:
+                blockType = match.group('blocktype')
+                blockName = match.group('blockName')
+                if blockType == 'content' and blockName is None:
+                    # make anonymous block name
+                    blockName = f'VJPS{generateUUID()}'
+                    # add name to the source line tag
+                    sourceLine['tags']['name'] = blockName
+
+                if blockName is None:
+                    # if block name is not specified, raise syntax error
+                    raise DslSyntaxError(
+                        env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'{blockType} name is not specified')
+
+                codeBlockInfo = {
+                    'indentLevel': len(match.group('indent')) // 4,
+                    'cursor': len(env.nextLines),
+                    'name': blockName,
+                    'type': blockType,
+                }
+                codeBlockInfoStack.append(codeBlockInfo)
+                env.nextLines.append(sourceLine)
+                continue
+
+            # match macro statement
+            match = re.match(
+                r'^(?P<indent> *)macro\s+(?P<name>[a-zA-Z_][a-zA-Z0-9_]*)(\((?P<args>.*)\))?\s*:\s*$', sourceLine['line'])
+            if match:
+                # if there was no block, raise syntax error
+                if not codeBlockInfoStack:
+                    raise DslSyntaxError(
+                        env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Macros must be defined in code block')
+
+                # if last block was macro, raise syntax error
+                if codeBlockInfoStack[-1]['type'] == 'macro':
+                    raise DslSyntaxError(
+                        env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Macros cannot be nested')
+
+                # prepare to register macro
+                blockName = codeBlockInfoStack[-1]['name']
+                macroName = match.group('name')
+                qualifiedMacroName = f'{blockName}.{macroName}'
+                macroArgs = match.group('args')
+                # if macro args becomes empty, set it to None
+                if macroArgs is not None and macroArgs.strip() == '':
+                    macroArgs = None
+                macroArgs = macroArgs.split(
+                    ',') if macroArgs is not None else []
+                macroArgs = [arg.strip() for arg in macroArgs]
+                # if any args is invalid format
+                for arg in macroArgs:
+                    if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', arg):
+                        raise DslSyntaxError(
+                            env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Invalid macro argument name "{arg}"')
+                # if any arg is duplicated
+                if len(macroArgs) != len(set(macroArgs)):
+                    raise DslSyntaxError(
+                        env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Duplication found in macro argument')
+                # if macro name is already defined, raise syntax error
+                if macroName in env.macros:
+                    raise DslSyntaxError(
+                        env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Macro "{macroName}"({qualifiedMacroName}) is already defined')
+                # add macro to the macro list
+                env.macros[qualifiedMacroName] = {
+                    'args': macroArgs,
+                    'indentLevel': 1 + len(match.group('indent')) // 4,
+                    'bodyLines': [],
+                }
+                # stack the macro block
+                codeBlockInfo = {
+                    'indentLevel': len(match.group('indent')) // 4,
+                    'cursor': len(env.nextLines),
+                    'name': qualifiedMacroName,
+                    'type': 'macro',
+                }
+                codeBlockInfoStack.append(codeBlockInfo)
+                continue
+
+            # if we are in macro block, add the line to the macro body
+            if codeBlockInfoStack and codeBlockInfoStack[-1]['type'] == 'macro':
+                macroName = codeBlockInfoStack[-1]['name']
+                macroInfo = env.macros[macroName]
+
+                # adjust indent level
+                # trim 4 * macro indent level from beginning of the line
+                unindentedLine = sourceLine['line'][4 *
+                                                    macroInfo['indentLevel']:]
+
+                macroInfo['bodyLines'].append(
+                    {'tags': sourceLine['tags'], 'cursor': sourceLine['cursor'], 'line': unindentedLine})
+                continue
+
+            # anything else
+            env.nextLines.append(sourceLine)
+
+    @staticmethod
+    def process(env: ProcessEnvironment) -> None:
+        codeBlockInfoStack = []
+        for sourceLine in env.sourceLines:
+            # if code block stack is not empty and this line have same or less indent level
+            # pop stack until the indent level is less than current indent level
+            while codeBlockInfoStack:
+                codeBlockInfo = codeBlockInfoStack[-1]
+                match = re.match(r'^(?P<indent> *)', sourceLine['line'])
+                indentLevel = len(match.group('indent')) // 4
+                if indentLevel <= codeBlockInfo['indentLevel']:
+                    codeBlockInfoStack.pop()
+                else:
+                    break
+
+            # match macro-callable block (library/data/system/content)
+            # for content, block may be anonymous
+            match = re.match(
+                r'^(?P<indent> *)(?P<blocktype>library|data|system|content)(?:\s+(?P<blockName>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*))?\s*:\s*$', sourceLine['line'])
+            if match:
+                blockType = match.group('blocktype')
+                blockName = match.group('blockName')
+                if blockType == 'content' and blockName is None:
+                    # get anonymous block name from the source line tag
+                    blockName = sourceLine['tags']['name']
+
+                codeBlockInfo = {
+                    'indentLevel': len(match.group('indent')) // 4,
+                    'cursor': len(env.nextLines),
+                    'name': blockName,
+                    'type': blockType,
+                }
+                codeBlockInfoStack.append(codeBlockInfo)
+                env.nextLines.append(sourceLine)
+                continue
+
+            # match macro statement
+            match = re.match(
+                r'^(?P<indent> *)macro\s+(?P<name>[a-zA-Z_][a-zA-Z0-9_.]*)(\((?P<args>.*)\))?\s*$', sourceLine['line'])
+            if match:
+                # if there was no block, raise syntax error
+                if not codeBlockInfoStack:
+                    raise DslSyntaxError(
+                        env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Macros must be defined in code block')
+
+                # find macro info from environment
+                blockName = codeBlockInfoStack[-1]['name']
+                macroIndent = match.group('indent')
+                macroName = match.group('name')
+                macroArgs = match.group('args')
+                # if macro args becomes empty, set it to None
+                if macroArgs is not None and macroArgs.strip() == '':
+                    macroArgs = None
+                macroArgs = macroArgs.split(
+                    ',') if macroArgs is not None else []
+                macroArgs = [arg.strip() for arg in macroArgs]
+
+                qualifiedMacroName = f'{blockName}.{macroName}'
+
+                # user may put full qualified name in macroName so we need to check first
+                if macroName not in env.macros:
+                    # if macro name is not found, check if it is full qualified name
+                    if qualifiedMacroName not in env.macros:
+                        raise DslSyntaxError(
+                            env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Macro "{macroName}"({qualifiedMacroName}) is not defined')
+                    else:
+                        macroName = qualifiedMacroName
+
+                # get macro info
+                macroInfo = env.macros[macroName]
+                macroInfoArgs = macroInfo['args']
+                macroInfoBodyLines = macroInfo['bodyLines']
+
+                # check arguments
+                # -- argument count must be same
+                if len(macroInfoArgs) != len(macroArgs):
+                    raise DslSyntaxError(
+                        env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Macro "{macroName}"({qualifiedMacroName}) argument count mismatch: {len(macroInfoArgs)} != {len(macroArgs)}')
+
+                # append macro body prepending indent
+                macroBodyCursor = sourceLine['cursor']
+                for macroBodyLine in macroInfoBodyLines:
+                    macroLineText = macroBodyLine['line']
+                    macroLineText = f'{macroIndent}{macroLineText}'
+
+                    # replace macro arguments with the arguments
+                    # -- format: $argName$ -> argValue
+                    macroLineText = re.sub(
+                        r'\$(?P<argName>[a-zA-Z_][a-zA-Z0-9_]*)\$', lambda m: macroArgs[macroInfoArgs.index(m.group('argName'))], macroLineText)
+
+                    env.nextLines.append(
+                        {'tags': sourceLine['tags'], 'cursor': macroBodyCursor, 'line': macroLineText})
+                continue
+
             # anything else
             env.nextLines.append(sourceLine)
 
@@ -390,7 +678,7 @@ class TokenModifierBlock:
                 indentLevel = len(match.group('indent')) // 4
                 if indentLevel > 1:
                     env.nextLines.append(
-                        {'tags': sourceLine['tags'], 'line': f'{sourceLine["line"][4:]}'})
+                        {'tags': sourceLine['tags'], 'cursor': sourceLine['cursor'], 'line': f'{sourceLine["line"][4:]}'})
                 else:
                     env.nextLines.append(sourceLine)
                 continue
@@ -417,7 +705,7 @@ class TokenType:
         for sourceCursor, sourceLine in enumerate(env.sourceLines):
             # type statement
             match = re.match(
-                r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?type\s+(?P<typeName>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)\s+extends\s+(?P<extends>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)\s*$', sourceLine['line'])
+                r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?type\s+(?P<typeName>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)(\s+(?P<hasextends>extends)\s+(?P<extends>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*))?\s*$', sourceLine['line'])
             if match:
                 typeIndent = match.group('indent')
 
@@ -426,7 +714,7 @@ class TokenType:
                     typeModifier = match.group('modifier')
                 elif match.group('modifier') is not None:
                     raise DslSyntaxError(
-                        env.sourcePath, sourceCursor, sourceLine['line'], f'Modifier tag already exists: {typeModifier} and {match.group("modifier")}')
+                        env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Modifier tag already exists: "{typeModifier}" on parent block and "{match.group("modifier")}" on itself')
                 if typeModifier == 'api':
                     typeModifier = 'public '
                 elif typeModifier == 'global':
@@ -435,16 +723,25 @@ class TokenType:
                     typeModifier = 'private '
 
                 typeName = match.group('typeName')
+                typeHasExtends = match.group('hasextends')
                 typeExtends = match.group('extends')
-                if typeExtends == 'handle':
+
+                # if typeHasExtends but typeExtends is None, raise syntax error
+                if typeHasExtends and typeExtends is None:
+                    raise DslSyntaxError(
+                        env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Extend type is not specified')
+
+                if typeHasExtends is None:
+                    typeExtends = ' extends array'
+                elif typeExtends == 'handle':
                     typeExtends = ''
                 else:
                     typeExtends = ' extends array'
 
                 env.nextLines.append(
-                    {'tags': {}, 'line': f'{typeIndent}{typeModifier}struct {typeName}{typeExtends}'})
+                    {'tags': {}, 'cursor': sourceLine['cursor'], 'line': f'{typeIndent}{typeModifier}struct {typeName}{typeExtends}'})
                 env.nextLines.append(
-                    {'tags': {}, 'line': f'{typeIndent}endstruct'})
+                    {'tags': {}, 'cursor': sourceLine['cursor'], 'line': f'{typeIndent}endstruct'})
                 continue
 
             # anything else
@@ -478,7 +775,7 @@ class TokenInitFunc:
                     if indentLevel <= initFunctionIndentLevel:
                         # exiting init block
                         env.nextLines.append(
-                            {'tags': {}, 'line': f'{"    "*initFunctionIndentLevel}endfunction'})
+                            {'tags': {}, 'cursor': sourceLine['cursor'], 'line': f'{"    "*initFunctionIndentLevel}endfunction'})
                         initFunctionBlock = False
                     else:
                         # inside init block
@@ -495,7 +792,7 @@ class TokenInitFunc:
                 initFunctionIndentLevel = len(indent) // 4
                 functionName = f'VJPI{generateUUID()}'
                 env.nextLines.append(
-                    {'tags': {'init': True}, 'line': f'{indent}private function {functionName} takes nothing returns nothing'})
+                    {'tags': {'init': True}, 'cursor': sourceLine['cursor'], 'line': f'{indent}private function {functionName} takes nothing returns nothing'})
                 continue
 
             # anything else
@@ -504,7 +801,7 @@ class TokenInitFunc:
         if initFunctionBlock:
             # if the init block is not closed, close it
             env.nextLines.append(
-                {'tags': {}, 'line': f'{"    "*initFunctionIndentLevel}endfunction'})
+                {'tags': {}, 'cursor': sourceLine['cursor'], 'line': f'{"    "*initFunctionIndentLevel}endfunction'})
             initFunctionBlock = False
 
 
@@ -593,7 +890,7 @@ class TokenLibrary:
 
             # library statement
             match = re.match(
-                r'^(?P<indent> *)(?P<librarytype>library|system)\s+(?P<libraryName>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)\s*:\s*$', sourceLine['line'])
+                r'^(?P<indent> *)(?P<librarytype>library|data|system)\s+(?P<libraryName>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)\s*:\s*$', sourceLine['line'])
             if match:
                 libraryType = match.group('librarytype')
                 libraryInfo = {
@@ -606,9 +903,12 @@ class TokenLibrary:
                 }
                 if libraryType == 'library':
                     env.libraries.append(libraryInfo['name'])
+                elif libraryType == 'data':
+                    env.datalibs.append(libraryInfo['name'])
+                    libraryInfo['requires'].append('VJPLIBS')
                 elif libraryType == 'system':
                     env.systems.append(libraryInfo['name'])
-                    libraryInfo['requires'].append('VJPLIBS')
+                    libraryInfo['requires'].append('VJPDATA')
                 inLibrary = True
                 continue
 
@@ -793,15 +1093,21 @@ class TokenFunction:
 
             # function statement
             match = re.match(
-                r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?(?P<name>[a-zA-Z][a-zA-Z0-9]*)\s*\((?P<takes>[^)]*)\)(?:\s*->\s*(?P<returns>\w+))?\s*:\s*$', sourceLine['line'])
+                r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?(?P<name>[a-zA-Z][a-zA-Z0-9_]*)\s*\((?P<takes>[^)]*)\)(?:\s*->\s*(?P<returns>\w+))?\s*:\s*$', sourceLine['line'])
             if match:
+                # if function name contains two or more continuous underscore, raise syntax error
+                functionName = match.group('name')
+                if re.search(r'_{2,}', functionName):
+                    raise DslSyntaxError(
+                        env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Function name "{match.group("name")}" cannot contain two or more continuous underscore')
+
                 functionIndent = match.group('indent')
                 functionModifier = sourceLine['tags'].get('modifier', None)
                 if functionModifier is None:
                     functionModifier = match.group('modifier')
                 elif match.group('modifier') is not None:
                     raise DslSyntaxError(
-                        env.sourcePath, sourceCursor, sourceLine['line'], f'Modifier tag already exists: {functionModifier} and {match.group("modifier")}')
+                        env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Modifier tag already exists: "{functionModifier}" on parent block and "{match.group("modifier")}" on itself')
                 if functionModifier == 'api':
                     functionModifier = 'public '
                 elif functionModifier == 'global':
@@ -819,7 +1125,7 @@ class TokenFunction:
                     'cursor': sourceCursor,
                     'indentLevel': len(functionIndent) // 4,
                     'modifier': match.group('modifier'),
-                    'name': match.group('name'),
+                    'name': functionName,
                     'takes': functionTakes,
                     'returns': functionReturns,
                 }
@@ -853,14 +1159,14 @@ class TokenVariable:
             # variable statement
             match = re.match(
                 r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?(?P<type>[a-zA-Z][a-zA-Z0-9]*)\s+(?P<let>\*)?(?P<name>[a-zA-Z][a-zA-Z0-9_]*)(?:\s*=\s*(?P<value>.*?))?\s*$', sourceLine['line'])
-            if match and not re.match(r'\b(library|system|scope|content|return|if|elseif|else|loop|while|until|exitwhen)\b', match.group('type')):
+            if match and not re.match(r'\b(library|data|system|scope|content|return|if|elseif|else|loop|while|until|exitwhen)\b', match.group('type')):
                 variableIndent = match.group('indent')
                 variableModifier = sourceLine['tags'].get('modifier', None)
                 if variableModifier is None:
                     variableModifier = match.group('modifier')
                 elif match.group('modifier') is not None:
                     raise DslSyntaxError(
-                        env.sourcePath, sourceCursor, sourceLine['line'], f'Modifier tag already exists: {variableModifier} and {match.group("modifier")}')
+                        env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Modifier tag already exists: "{variableModifier}" on parent block and "{match.group("modifier")}" on itself')
                 if variableModifier == 'api':
                     variableModifier = 'public '
                 elif variableModifier == 'global':
@@ -1399,7 +1705,7 @@ class TokenFormatStrings:
                             depth -= 1
                         j += 1
                     expr = content[i+1:j-1].strip()
-                    segs.append(f'({expr})')
+                    segs.append(f'{expr}')
                     i = j
                 else:
                     j = i
@@ -1434,7 +1740,7 @@ class TokenFormatStrings:
                 replaced = transform_fstring_simple(inner)
                 # 바깥쪽 괄호는 맨 바깥 레벨에서만 제거하기 위해 계속 감싸두고,
                 # 마지막에 한 번 껍데기 괄호를 벗겨 줍니다.
-                s = s[:start] + f'({replaced})' + s[end+1:]
+                s = s[:start] + f'{replaced}' + s[end+1:]
             # 전체가 하나의 괄호로 감싸져 있으면 벗겨 주기
             if s.startswith('(') and s.endswith(')'):
                 s = s[1:-1]
