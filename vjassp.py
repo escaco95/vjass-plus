@@ -3,12 +3,13 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.20
+vJASS+ Version: 3.201
 
 Author: choi-sw (escaco95@naver.com)
 
 Change Log:
 - 3.20: Added macro block (macro myMacro:) support
+  - 3.201: fixed macro argument parsing with commas in quotes
 - 3.14: Added data block (data:) syntax
   - 3.144: can omit type extends (default is array)
   - 3.143: syntax error exactly picks the line number from now on
@@ -475,9 +476,10 @@ class TokenMacro:
                 # if macro args becomes empty, set it to None
                 if macroArgs is not None and macroArgs.strip() == '':
                     macroArgs = None
-                macroArgs = macroArgs.split(
-                    ',') if macroArgs is not None else []
-                macroArgs = [arg.strip() for arg in macroArgs]
+                if macroArgs is not None:
+                    macroArgs = [arg.strip() for arg in re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', macroArgs)]
+                else:
+                    macroArgs = []
                 # if any args is invalid format
                 for arg in macroArgs:
                     if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', arg):
@@ -577,9 +579,11 @@ class TokenMacro:
                 # if macro args becomes empty, set it to None
                 if macroArgs is not None and macroArgs.strip() == '':
                     macroArgs = None
-                macroArgs = macroArgs.split(
-                    ',') if macroArgs is not None else []
-                macroArgs = [arg.strip() for arg in macroArgs]
+
+                if macroArgs is not None:
+                    macroArgs = [arg.strip() for arg in re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', macroArgs)]
+                else:
+                    macroArgs = []
 
                 qualifiedMacroName = f'{blockName}.{macroName}'
 
