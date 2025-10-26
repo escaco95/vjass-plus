@@ -3,11 +3,16 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.201
+vJASS+ Version: 3.40
 
 Author: choi-sw (escaco95@naver.com)
 
 Change Log:
+- 3.40: Changed import syntax to use quotes
+- 3.31: Added alias type support
+  - 3.311: integers can be initialized with null(=0) expression
+- 3.30: Changed variable definition syntax
+  - 3.301: Added ~ operator for const variable definition
 - 3.20: Added macro block (macro myMacro:) support
   - 3.201: fixed macro argument parsing with commas in quotes
 - 3.14: Added data block (data:) syntax
@@ -326,7 +331,7 @@ class TokenImport:
         for sourceCursor, sourceLine in enumerate(env.sourceLines):
             # single-line import statement
             match = re.match(
-                r'^\s*(?:when\s+(?P<when>[a-zA-Z0-9_.-]+)\s+)?import\s+(?P<import>[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*)(?P<mass>\.\*\*?)?\s*$', sourceLine['line'])
+                r'^\s*(?:when\s+(?P<when>[a-zA-Z0-9_.-]+)\s+)?import\s+\"(?P<import>[^\"]+?)(?P<mass>(/\*|/\*\*))\"\s*$', sourceLine['line'])
             if match:
                 # check when statement
                 importWhen = match.group('when')
@@ -334,55 +339,42 @@ class TokenImport:
                     # if when statement is not in arguments, skip this import statement
                     continue
 
-                importPath = match.group('import').replace('.', '/')
+                importPath = match.group('import').replace('\\', '/')
                 importPath = os.path.join(
                     os.path.dirname(env.sourcePath), importPath)
                 importPath = normalizePath(importPath)
 
-                importPaths = []
-                # if not mass import, add .jp extension
                 importMass = match.group('mass')
-                if importMass is None:
-                    importPath += '.jp'
+                importPaths = []
+                # if import ends does not ends with /* or /**, it is a single file import
+                if not importMass:
                     importPaths.append(importPath)
-                else:
-                    # if directory not exists, raise syntax error
-                    if not os.path.isdir(importPath):
-                        raise DslSyntaxError(
-                            env.sourcePath, sourceLine['cursor'], sourceLine, f'No such Directory "{importPath}"')
-                    # if mass import, and mass option is .*, add all files in the directory
-                    if importMass == '.*':
-                        for root, dirs, files in os.walk(importPath):
+                elif importMass == '/*':
+                    for root, dirs, files in os.walk(importPath):
+                        for file in files:
+                            if file.endswith('.jp'):
+                                # normalize path
+                                file = normalizePath(
+                                    os.path.join(root, file))
+                                importPaths.append(file)
+                elif importMass == '/**':
+                    # double star import = recursive import
+                    recursiveDirs = [importPath]
+                    while recursiveDirs:
+                        currentDir = recursiveDirs.pop()
+                        for root, dirs, files in os.walk(currentDir):
                             for file in files:
                                 if file.endswith('.jp'):
-                                    # remove .jp extension
-                                    file = file[:-3]
                                     # normalize path
                                     file = normalizePath(
                                         os.path.join(root, file))
-                                    # append .jp extension
-                                    file += '.jp'
                                     importPaths.append(file)
-                    elif importMass == '.**':
-                        # double star import = recursive import
-                        recursiveDirs = [importPath]
-                        while recursiveDirs:
-                            currentDir = recursiveDirs.pop()
-                            for root, dirs, files in os.walk(currentDir):
-                                for file in files:
-                                    if file.endswith('.jp'):
-                                        # remove .jp extension
-                                        file = file[:-3]
-                                        # normalize path
-                                        file = normalizePath(
-                                            os.path.join(root, file))
-                                        # append .jp extension
-                                        file += '.jp'
-                                        importPaths.append(file)
-                                # add subdirs to the list
-                                for dir in dirs:
-                                    recursiveDirs.append(
-                                        os.path.join(root, dir))
+                            # add subdirs to the list
+                            for dir in dirs:
+                                recursiveDirs.append(
+                                    os.path.join(root, dir))
+
+                # add import paths to the source group
                 for importPath in importPaths:
                     if importPath not in env.sourceGroup:
                         # if file not exists, raise syntax error
@@ -689,6 +681,51 @@ class TokenModifierBlock:
 
             # add the line to nextLines
             env.nextLines.append(sourceLine)
+
+
+"""
+:::'###::::'##:::::::'####::::'###:::::'######::
+::'## ##::: ##:::::::. ##::::'## ##:::'##... ##:
+:'##:. ##:: ##:::::::: ##:::'##:. ##:: ##:::..::
+'##:::. ##: ##:::::::: ##::'##:::. ##:. ######::
+ #########: ##:::::::: ##:: #########::..... ##:
+ ##.... ##: ##:::::::: ##:: ##.... ##:'##::: ##:
+ ##:::: ##: ########:'####: ##:::: ##:. ######::
+..:::::..::........::....::..:::::..:::......:::
+"""
+
+
+class TokenTypeAlias:
+    # static dictionary to hold type aliases
+    typeAliases = {
+        'int': 'integer',
+        'str': 'string',
+        'bool': 'boolean',
+        'void': 'nothing',
+        'table': 'hashtable',
+    }
+
+    @staticmethod
+    def process(env: ProcessEnvironment) -> None:
+        # expression: alias <typeName> extends <originalType>
+        for sourceCursor, sourceLine in enumerate(env.sourceLines):
+            match = re.match(
+                r'^(?P<indent> *)alias\s+(?P<typeName>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)\s+extends\s+(?P<originalType>[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)\s*$', sourceLine['line'])
+            if match:
+                typeName = match.group('typeName')
+                originalType = match.group('originalType')
+
+                # aliases are saved in the memory for later resolution
+                TokenTypeAlias.typeAliases[typeName] = originalType
+                # alias definition does not generate any code
+                continue
+
+            # anything else
+            env.nextLines.append(sourceLine)
+
+    @staticmethod
+    def getActualType(typeName: str) -> str:
+        return TokenTypeAlias.typeAliases.get(typeName, typeName)
 
 
 """
@@ -1052,6 +1089,25 @@ class TokenNative:
                 if not nativeReturns:
                     nativeReturns = 'nothing'
 
+                # resolve takes aliases
+                takes_str = nativeTakes.strip()
+                if takes_str.lower() != 'nothing':
+                    parts = [p.strip() for p in takes_str.split(',')]
+                    resolved_parts = []
+                    for p in parts:
+                        pm = re.match(r'^(?P<type>[a-zA-Z][a-zA-Z0-9_.-]*)\s+(?P<name>[a-zA-Z][a-zA-Z0-9_]*)$', p)
+                        if pm:
+                            t = TokenTypeAlias.getActualType(pm.group('type'))
+                            resolved_parts.append(f'{t} {pm.group("name")}')
+                        else:
+                            resolved_parts.append(p)
+                    nativeTakes = ', '.join(resolved_parts)
+                else:
+                    nativeTakes = 'nothing'
+
+                # resolve return alias
+                nativeReturns = TokenTypeAlias.getActualType(nativeReturns)
+
                 env.nextLines.append(
                     {'tags': {'native': True}, 'line': f'{nativeIndent}native {match.group("name")} takes {nativeTakes} returns {nativeReturns}'})
                 continue
@@ -1118,12 +1174,32 @@ class TokenFunction:
                     functionModifier = ''
                 else:
                     functionModifier = 'private '
+
                 functionTakes = match.group('takes')
                 if not functionTakes:
                     functionTakes = 'nothing'
                 functionReturns = match.group('returns')
                 if not functionReturns:
                     functionReturns = 'nothing'
+
+                # take type alias resolution
+                functionTakesParts = []
+                takes_str = functionTakes.strip()
+                if takes_str.lower() != 'nothing':
+                    params = [p.strip() for p in takes_str.split(',')]
+                    for p in params:
+                        pm = re.match(r'^(?P<type>[a-zA-Z][a-zA-Z0-9_.-]*)\s+(?P<name>[a-zA-Z][a-zA-Z0-9_]*)$', p)
+                        if pm:
+                            resolved_type = TokenTypeAlias.getActualType(pm.group('type'))
+                            functionTakesParts.append(f'{resolved_type} {pm.group("name")}')
+                        elif p:  # fallback: keep as-is
+                            functionTakesParts.append(p)
+                    functionTakes = ', '.join(functionTakesParts) if functionTakesParts else 'nothing'
+                else:
+                    functionTakes = 'nothing'
+
+                # return type alias resolution
+                functionReturns = TokenTypeAlias.getActualType(functionReturns)
 
                 functionInfo = {
                     'cursor': sourceCursor,
@@ -1162,7 +1238,7 @@ class TokenVariable:
         for sourceCursor, sourceLine in enumerate(env.sourceLines):
             # variable statement
             match = re.match(
-                r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?(?P<type>[a-zA-Z][a-zA-Z0-9]*)\s+(?P<let>\*)?(?P<name>[a-zA-Z][a-zA-Z0-9_]*)(?:\s*=\s*(?P<value>.*?))?\s*$', sourceLine['line'])
+                r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?(?P<type>[a-zA-Z][a-zA-Z0-9]*)\s+(?P<name>[a-zA-Z][a-zA-Z0-9_]*)(?:\s*(?P<let>=|~)\s*(?P<value>.*?))?\s*$', sourceLine['line'])
             if match and not re.match(r'\b(library|data|system|scope|content|return|if|elseif|else|loop|while|until|exitwhen)\b', match.group('type')):
                 variableIndent = match.group('indent')
                 variableModifier = sourceLine['tags'].get('modifier', None)
@@ -1177,8 +1253,10 @@ class TokenVariable:
                     variableModifier = ''
                 else:
                     variableModifier = 'private '
-                variableLet = match.group('let')
+                variableLet = match.group('let') == '='
                 variableType = match.group('type')
+                # resolve type aliases
+                variableType = TokenTypeAlias.getActualType(variableType)
                 variableName = match.group('name')
                 variableValue = match.group('value')
 
@@ -1217,6 +1295,8 @@ class TokenVariable:
                     variableResult += f'{variableType} array {variableName}'
                 elif re.match(r'^\{[^\}]*\}', variableValue):
                     variableResult += f'{variableType} {variableName} = InitHashtable()'
+                elif variableType == 'integer' and variableValue == 'null':
+                    variableResult += f'{variableType} {variableName} = 0'
                 else:
                     variableResult += f'{variableType} {variableName} = {variableValue}'
 
