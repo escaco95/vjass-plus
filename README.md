@@ -15,6 +15,8 @@ a vJASS+ -> vJASS converter
 - omittable call, set
 - simplified function declacation
 - aliasing types
+  - default aliases
+  - `integer -> int` / `string -> str` / `boolean -> bool` / `void -> nothing` / `table -> hashtable`
 
 ## vJass+ Form
 
