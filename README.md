@@ -14,6 +14,8 @@ a vJASS+ -> vJASS converter
 - local variable hoisting
 - omittable call, set
 - simplified function declacation
+- new operators
+  - `is`, `is not`, `+=...`, `++...`
 - aliasing types
   - default aliases
   - `integer -> int` / `string -> str` / `boolean -> bool` / `void -> nothing` / `table -> hashtable`
@@ -21,77 +23,83 @@ a vJASS+ -> vJASS converter
 ## vJass+ Form
 
 ```python
-# this is single line comment
-library tick:
-    """
-    This is multi-line comment
-    """
+# index allocator module
+int next   = 0
+int size   = 0
+int stack  = []
 
-    # index allocator module
-    int next   = 0
-    int size   = 0
-    int stack  = []
+allocate() -> integer:
+    if size > 0:
+        size--
+        return stack[size]
+    else:
+        next++
+        return next
 
-    allocate() -> integer:
-        if size > 0:
-            size--
-            return stack[size]
-        else:
-            next++
-            return next
+deallocate(integer id):
+    stack[size] = id
+    size++
 
-    deallocate(integer id):
-        stack[size] = id
-        size++
+# internal module
+table   table   ~ {}
+timer   timers  = []
+bool    exists  = []
+tick    last    = none
 
-    # internal module
-    table   table   ~ {}
-    timer   timers  = []
-    bool    exists  = []
-    tick    last    = null
+int     INITIAL_POOL_AMOUNT ~ 512
+init:
+    int i = 1
+    until i > INITIAL_POOL_AMOUNT:
+        timers[i] = CreateTimer()
+        SaveInteger(table, none, GetHandleId(timers[i]), i)
+        i++
+
+global:
+    alias tick extends integer
+
+api:
+    # Tick - 생성
+    Create() -> tick:
+        last = allocate()
+        if timers[last] is null:
+            timers[last] = CreateTimer()
+            SaveInteger(table, none, GetHandleId(timers[last]), last)
+        exists[last] = true
+        return last
     
-    int     INITIAL_POOL_AMOUNT ~ 512
-    init:
-        int i = 1
-        until i > INITIAL_POOL_AMOUNT:
-            timers[i] = CreateTimer()
-            SaveInteger(table, 0, GetHandleId(timers[i]), i)
-            i++
-
-    global:
-        alias tick extends integer
-
-        TickCreate() -> tick:
-            last = allocate()
-            if timers[last] == null:
-                timers[last] = CreateTimer()
-                SaveInteger(table, 0, GetHandleId(timers[last]), last)
-            exists[last] = true
-            return last
-
-        TickDestroy(tick whichTick):
-            if exists[whichTick]:
-                exists[whichTick] = false
-                PauseTimer(timers[whichTick])
-                deallocate(whichTick)
-
-        TickStart(tick whichTick, real timeout, bool periodic, code handlerFunc):
-            TimerStart(timers[whichTick], timeout, periodic, handlerFunc)
-
-        TickOnce(tick whichTick, real timeout, code handlerFunc):
-            TickStart(whichTick, timeout, false, handlerFunc)
-
-        TickPeriodic(tick whichTick, real timeout, code handlerFunc):
-            TickStart(whichTick, timeout, true, handlerFunc)
-
-        TickPause(tick whichTick):
+    # Tick - 파괴
+    Destroy(tick whichTick):
+        if exists[whichTick]:
+            exists[whichTick] = false
             PauseTimer(timers[whichTick])
+            deallocate(whichTick)
 
-        TickResume(tick whichTick):
-            ResumeTimer(timers[whichTick])
+    # Tick - 실행
+    Start(tick whichTick, real timeout, bool periodic, code handlerFunc):
+        TimerStart(timers[whichTick], timeout, periodic, handlerFunc)
 
-        GetExpiredTick() -> tick:
-            return LoadInteger(table, 0, GetHandleId(GetExpiredTimer()))
+    # Tick - 한 번 실행
+    Once(tick whichTick, real timeout, code handlerFunc):
+        TimerStart(timers[whichTick], timeout, false, handlerFunc)
+
+    # Tick - 반복 실행
+    Periodic(tick whichTick, real timeout, code handlerFunc):
+        TimerStart(timers[whichTick], timeout, true, handlerFunc)
+
+    # Tick - 일시정지
+    # * 일시정지 상태가 아닌 tick 개체를 일시정지할 경우 문제가 발생할 수 있음
+    Pause(tick whichTick):
+        PauseTimer(timers[whichTick])
+
+    # Tick - 재개
+    # * 일시정지 상태가 아닌 tick 개체를 재개할 경우 문제가 발생할 수 있음
+    Resume(tick whichTick):
+        ResumeTimer(timers[whichTick])
+
+    # Tick - 만료된 tick 가져오기
+    # * 해당 함수가 호출된 시점에 만료된 tick 개체가 존재하지 않으면 0 반환
+    Expired() -> tick:
+        return LoadInteger(table, none, GetHandleId(GetExpiredTimer()))
 
 ```
 
