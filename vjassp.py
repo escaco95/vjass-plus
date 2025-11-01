@@ -3,13 +3,16 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.501
+vJASS+ Version: 3.511
 
 Author: choi-sw (escaco95@naver.com)
 
 Change Log:
+- 3.51: Changed macro arguments to literal string
+  - 3.511: Added support for global block alignment
 - 3.50: Added support for dot in identifier names
   - 3.501: Removed support '->' operator for api(public) call syntax
+  - 3.502: Fixed keyword processor bug which converts 'this' into 'th=='
 - 3.45: Added 'none' keyword for zero value
   - 3.451: Removed integer null initialization support
 - 3.44: Added 'is, is not' operators for comparison
@@ -712,6 +715,15 @@ class TokenMacro:
                     raise DslSyntaxError(
                         env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Macro "{macroName}"({qualifiedMacroName}) argument count mismatch: {len(macroInfoArgs)} != {len(macroArgs)}')
 
+                # convert string input into code fragment
+                # e.g) "arg1" -> arg1
+                # e.g) "value=\"test value\"," -> value="test value",
+                for index, arg in enumerate(macroArgs):
+                    match = re.match(
+                        r'^\s*"(.*)"\s*$', arg)
+                    if match:
+                        macroArgs[index] = match.group(1)
+
                 # append macro body prepending indent
                 macroBodyCursor = sourceLine['cursor']
                 for macroBodyLine in macroInfoBodyLines:
@@ -1261,8 +1273,12 @@ class TokenFunction:
                         functionInfo = None
                     else:
                         # inside function block
-                        sourceLine['tags']['function'] = True
-                        env.nextLines.append(sourceLine)
+                        tags = {
+                            'function': True,
+                            **sourceLine['tags']
+                        }
+                        env.nextLines.append(
+                            {'tags': tags, 'cursor': sourceLine['cursor'], 'line': sourceLine['line']})
                         continue
 
             # function statement
@@ -1704,7 +1720,7 @@ class TokenCodePrefix:
 
                 # variable assignment
                 match = re.match(
-                    r'^(?P<indent> *)(?P<name>[a-zA-Z][a-zA-Z0-9_.\[\]]*)\s*(?P<operator>=|\+\+|\-\-|\*\*|!!|//|\+=|\-=|\*=|/=)\s*(?P<value>.*)$', sourceLine['line'])
+                    r'^(?P<indent> *)(?P<name>[a-zA-Z][a-zA-Z0-9_.\[\]:]*)\s*(?P<operator>=|\+\+|\-\-|\*\*|!!|//|\+=|\-=|\*=|/=)\s*(?P<value>.*)$', sourceLine['line'])
                 if match:
                     variableIndent = match.group('indent')
                     variableName = match.group('name')
@@ -1960,6 +1976,7 @@ class TokenFormatStrings:
             else:
                 env.nextLines.append(sourceLine)
 
+
 """
 :::'###::::'########::'####::::::::::'########:'##::::'##:'########::
 ::'## ##::: ##.... ##:. ##::::::::::: ##.....::. ##::'##:: ##.... ##:
@@ -1970,6 +1987,7 @@ class TokenFormatStrings:
  ##:::: ##: ##::::::::'####:::::::::: ########: ##:::. ##: ##::::::::
 ..:::::..::..:::::::::....:::::::::::........::..:::::..::..:::::::::
 """
+
 
 class TokenApiExpression:
 
@@ -2005,7 +2023,7 @@ class TokenApiExpression:
                     string_char = c
                     result.append(c)
                 elif c == '.':
-                    left_digit  = (i > 0 and line[i - 1].isdigit())
+                    left_digit = (i > 0 and line[i - 1].isdigit())
                     right_digit = (i + 1 < n and line[i + 1].isdigit())
 
                     if left_digit or right_digit:
@@ -2050,12 +2068,108 @@ class TokenApiExpression:
             # * Test->First() becomes Test_First()
             # * Test->First->Second() becomes Test_First_Second()
 
-            processedLine = TokenApiExpression.replace_api_calls(sourceLine['line'])
+            processedLine = TokenApiExpression.replace_api_calls(
+                sourceLine['line'])
             if processedLine != sourceLine['line']:
                 env.nextLines.append(
                     {'tags': sourceLine['tags'], 'line': processedLine})
             else:
                 env.nextLines.append(sourceLine)
+
+
+"""
+:'######:::'########:::::::::::'##::::'##::'#######::'####::'######::'########:
+'##... ##:: ##.... ##:::::::::: ##:::: ##:'##.... ##:. ##::'##... ##:... ##..::
+ ##:::..::: ##:::: ##:::::::::: ##:::: ##: ##:::: ##:: ##:: ##:::..::::: ##::::
+ ##::'####: ########::'#######: #########: ##:::: ##:: ##::. ######::::: ##::::
+ ##::: ##:: ##.... ##:........: ##.... ##: ##:::: ##:: ##:::..... ##:::: ##::::
+ ##::: ##:: ##:::: ##:::::::::: ##:::: ##: ##:::: ##:: ##::'##::: ##:::: ##::::
+. ######::: ########::::::::::: ##:::: ##:. #######::'####:. ######::::: ##::::
+:......::::........::::::::::::..:::::..:::.......:::....:::......::::::..:::::
+"""
+
+
+class TokenHoistGlobalblock:
+    @staticmethod
+    def process(env: ProcessEnvironment) -> None:
+        """
+        Hoist globals~endglobals blocks to the top of their containing block (library/scope),
+        preserving original order. Must run AFTER TokenLibrary/TokenScope.
+        """
+        inGlobalBlock = False
+        globalBlockLines = []
+        globalBlockTags = {}
+        globalIndentLevel = 0
+
+        def find_container_insert_pos(nextLines: list[int | dict]) -> int:
+            """
+            Find insertion point: right after the last 'library' or 'scope' header,
+            and after any already-hoisted globals blocks under that header.
+            """
+            header_idx = -1
+            for i, line in enumerate(nextLines):
+                text = line['line']
+                if text.startswith('library') or text.startswith('scope'):
+                    header_idx = i
+            if header_idx < 0:
+                return 0
+            insert_pos = header_idx + 1
+            # Skip existing hoisted globals blocks (preserve order)
+            i = insert_pos
+            while i < len(nextLines):
+                if re.match(r'^\s*globals\s*$', nextLines[i]['line']):
+                    j = i + 1
+                    while j < len(nextLines) and not re.match(r'^\s*endglobals\s*$', nextLines[j]['line']):
+                        j += 1
+                    if j < len(nextLines) and re.match(r'^\s*endglobals\s*$', nextLines[j]['line']):
+                        insert_pos = j + 1
+                        i = insert_pos
+                        continue
+                break
+            return insert_pos
+
+        def hoist_now():
+            nonlocal inGlobalBlock, globalBlockLines, globalBlockTags, globalIndentLevel
+            insert_pos = find_container_insert_pos(env.nextLines)
+            env.nextLines.insert(insert_pos, {
+                                 'tags': globalBlockTags, 'line': f'{"    "*globalIndentLevel}globals'})
+            for k, globalLine in enumerate(globalBlockLines, start=1):
+                env.nextLines.insert(insert_pos + k, globalLine)
+            env.nextLines.insert(insert_pos + 1 + len(globalBlockLines),
+                                 {'tags': globalBlockTags, 'line': f'{"    "*globalIndentLevel}endglobals'})
+            inGlobalBlock = False
+            globalBlockLines = []
+
+        for sourceCursor, sourceLine in enumerate(env.sourceLines):
+            # match globals statement
+            match = re.match(r'^(?P<indent> *)globals\s*$', sourceLine['line'])
+            if match:
+                inGlobalBlock = True
+                globalBlockLines = []
+                globalBlockTags = sourceLine['tags']
+                globalIndentLevel = len(match.group('indent')) // 4
+                continue
+
+            # match endglobals statement
+            match = re.match(r'^(?P<indent> *)endglobals\s*$',
+                             sourceLine['line'])
+            if match and inGlobalBlock:
+                hoist_now()
+                continue
+
+            if inGlobalBlock:
+                # inside global block
+                globalBlockLines.append(
+                    {'tags': sourceLine['tags'], 'line': sourceLine['line']})
+                continue
+
+            # anything else
+            env.nextLines.append(sourceLine)
+
+        # EOF with unclosed globals: close and hoist it as well
+        if inGlobalBlock:
+            hoist_now()
+
 
 """
 '##:::'##:'########:'##:::'##:'##:::::'##::'#######::'########::'########::
@@ -2068,14 +2182,15 @@ class TokenApiExpression:
 ..::::..::........:::::..::::::...::...::::.......:::..:::::..::........:::
 """
 
+
 class TokenCustomKeywords:
     # static keyword mappings
     KEYWORD_MAPPINGS = {
-        'is': '==',
-        'is\\s+not': '!=',
-        'none': '0',
-        'pass': 'return',
-        'exit': 'return',
+        r'\sis\s+not\s': ' != ',
+        r'\sis\s': ' == ',
+        r'\bnone\b': '0',
+        r'\bpass\b': 'return',
+        r'\bexit\b': 'return',
     }
 
     @staticmethod
@@ -2090,24 +2205,27 @@ class TokenCustomKeywords:
                 c = line[i]
                 if in_string:
                     result += c
-                    if c == string_char and (i == 0 or line[i - 1] != '\\'):  # 문자열 종료
+                    if c == string_char and (i == 0 or line[i - 1] != '\\'):
                         in_string = False
-                    elif c == '\\' and i + 1 < len(line):  # 이스케이프 문자 처리
+                    elif c == '\\' and i + 1 < len(line):
                         result += line[i + 1]
                         i += 1
                 else:
-                    if c in ('"', "'"):  # 문자열 시작
+                    if c in ('"', "'"):
                         in_string = True
                         string_char = c
                         result += c
                     else:
-                        # 문자열 외부에서만 키워드 치환
-                        for keyword, replacement in keyword_mappings.items():
-                            if re.match(rf'\b{keyword}\b', line[i:]):
+                        replaced = False
+                        for pattern, replacement in keyword_mappings.items():
+                            m = re.match(pattern, line[i:])
+                            if m:
                                 result += replacement
-                                i += len(keyword) - 1
+                                # FIX: advance by matched text length, not pattern length
+                                i += len(m.group(0)) - 1
+                                replaced = True
                                 break
-                        else:
+                        if not replaced:
                             result += c
                 i += 1
             return result
@@ -2120,6 +2238,7 @@ class TokenCustomKeywords:
                     {'tags': sourceLine['tags'], 'line': processedLine})
             else:
                 env.nextLines.append(sourceLine)
+
 
 """
 '##::::'##::::'###::::'####:'##::: ##:
