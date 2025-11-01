@@ -3,11 +3,18 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.42
+vJASS+ Version: 3.501
 
 Author: choi-sw (escaco95@naver.com)
 
 Change Log:
+- 3.50: Added support for dot in identifier names
+  - 3.501: Removed support '->' operator for api(public) call syntax
+- 3.45: Added 'none' keyword for zero value
+  - 3.451: Removed integer null initialization support
+- 3.44: Added 'is, is not' operators for comparison
+  - 3.441: Added 'pass' and 'exit' keywords as alias of 'return'
+- 3.43: Added '->' operator for api(public) call syntax
 - 3.42: Added '!!' operator for boolean negation
 - 3.41: Added support for .jpcon, .jpsys, .jpdat, .jplib file extensions
 - 3.40: Changed import syntax to use quotes
@@ -73,7 +80,7 @@ def normalizePath(sourceFilePath):
     return os.path.abspath(sourceFilePath.replace('\\', '/'))
 
 
-def convertToIdentifierOrNone(text: str) -> str|None:
+def convertToIdentifierOrNone(text: str) -> str | None:
     """
     Convert unknown format text into PascalCase format.
       * If the result is invalid identifier, return None.
@@ -103,6 +110,7 @@ def convertToIdentifierOrNone(text: str) -> str|None:
     if not re.match(r'^[A-Z][a-zA-Z0-9]*$', result):
         return None
     return result
+
 
 class ProcessEnvironment:
     def __init__(self):
@@ -220,7 +228,6 @@ def compile():
                 prefixLines = []
                 indentation = ''
 
-                
                 try:
                     if sourcePath.endswith('.jpcon'):
                         blockName = os.path.splitext(
@@ -270,7 +277,7 @@ def compile():
 
                 # append source lines with indentation
                 env.sourceLines += [{'tags': {}, 'cursor': sourceCursor, 'line': f'{indentation}{sourceLine}'}
-                                   for sourceCursor, sourceLine in enumerate(file.read().splitlines())]
+                                    for sourceCursor, sourceLine in enumerate(file.read().splitlines())]
 
             # Preprocess each preprocessor
             try:
@@ -573,7 +580,8 @@ class TokenMacro:
                 if macroArgs is not None and macroArgs.strip() == '':
                     macroArgs = None
                 if macroArgs is not None:
-                    macroArgs = [arg.strip() for arg in re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', macroArgs)]
+                    macroArgs = [arg.strip() for arg in re.split(
+                        r',(?=(?:[^"]*"[^"]*")*[^"]*$)', macroArgs)]
                 else:
                     macroArgs = []
                 # if any args is invalid format
@@ -677,7 +685,8 @@ class TokenMacro:
                     macroArgs = None
 
                 if macroArgs is not None:
-                    macroArgs = [arg.strip() for arg in re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', macroArgs)]
+                    macroArgs = [arg.strip() for arg in re.split(
+                        r',(?=(?:[^"]*"[^"]*")*[^"]*$)', macroArgs)]
                 else:
                     macroArgs = []
 
@@ -1199,7 +1208,8 @@ class TokenNative:
                     parts = [p.strip() for p in takes_str.split(',')]
                     resolved_parts = []
                     for p in parts:
-                        pm = re.match(r'^(?P<type>[a-zA-Z][a-zA-Z0-9_.-]*)\s+(?P<name>[a-zA-Z][a-zA-Z0-9_]*)$', p)
+                        pm = re.match(
+                            r'^(?P<type>[a-zA-Z][a-zA-Z0-9_.-]*)\s+(?P<name>[a-zA-Z][a-zA-Z0-9_]*)$', p)
                         if pm:
                             t = TokenTypeAlias.getActualType(pm.group('type'))
                             resolved_parts.append(f'{t} {pm.group("name")}')
@@ -1257,7 +1267,7 @@ class TokenFunction:
 
             # function statement
             match = re.match(
-                r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?(?P<name>[a-zA-Z][a-zA-Z0-9_]*)\s*\((?P<takes>[^)]*)\)(?:\s*->\s*(?P<returns>\w+))?\s*:\s*$', sourceLine['line'])
+                r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?(?P<name>[a-zA-Z][a-zA-Z0-9_\.]*)\s*\((?P<takes>[^)]*)\)(?:\s*->\s*(?P<returns>\w+))?\s*:\s*$', sourceLine['line'])
             if match:
                 # if function name contains two or more continuous underscore, raise syntax error
                 functionName = match.group('name')
@@ -1292,13 +1302,17 @@ class TokenFunction:
                 if takes_str.lower() != 'nothing':
                     params = [p.strip() for p in takes_str.split(',')]
                     for p in params:
-                        pm = re.match(r'^(?P<type>[a-zA-Z][a-zA-Z0-9_.-]*)\s+(?P<name>[a-zA-Z][a-zA-Z0-9_]*)$', p)
+                        pm = re.match(
+                            r'^(?P<type>[a-zA-Z][a-zA-Z0-9_.-]*)\s+(?P<name>[a-zA-Z][a-zA-Z0-9_\.]*)$', p)
                         if pm:
-                            resolved_type = TokenTypeAlias.getActualType(pm.group('type'))
-                            functionTakesParts.append(f'{resolved_type} {pm.group("name")}')
+                            resolved_type = TokenTypeAlias.getActualType(
+                                pm.group('type'))
+                            functionTakesParts.append(
+                                f'{resolved_type} {pm.group("name")}')
                         elif p:  # fallback: keep as-is
                             functionTakesParts.append(p)
-                    functionTakes = ', '.join(functionTakesParts) if functionTakesParts else 'nothing'
+                    functionTakes = ', '.join(
+                        functionTakesParts) if functionTakesParts else 'nothing'
                 else:
                     functionTakes = 'nothing'
 
@@ -1342,7 +1356,7 @@ class TokenVariable:
         for sourceCursor, sourceLine in enumerate(env.sourceLines):
             # variable statement
             match = re.match(
-                r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?(?P<type>[a-zA-Z][a-zA-Z0-9]*)\s+(?P<name>[a-zA-Z][a-zA-Z0-9_]*)(?:\s*(?P<let>=|~)\s*(?P<value>.*?))?\s*$', sourceLine['line'])
+                r'^(?P<indent> *)(?:(?P<modifier>api|global)\s+)?(?P<type>[a-zA-Z][a-zA-Z0-9\.]*)\s+(?P<name>[a-zA-Z][a-zA-Z0-9_\.]*)(?:\s*(?P<let>=|~)\s*(?P<value>.*?))?\s*$', sourceLine['line'])
             if match and not re.match(r'\b(library|data|system|scope|content|return|if|elseif|else|loop|while|until|exitwhen)\b', match.group('type')):
                 variableIndent = match.group('indent')
                 variableModifier = sourceLine['tags'].get('modifier', None)
@@ -1946,6 +1960,166 @@ class TokenFormatStrings:
             else:
                 env.nextLines.append(sourceLine)
 
+"""
+:::'###::::'########::'####::::::::::'########:'##::::'##:'########::
+::'## ##::: ##.... ##:. ##::::::::::: ##.....::. ##::'##:: ##.... ##:
+:'##:. ##:: ##:::: ##:: ##::::::::::: ##::::::::. ##'##::: ##:::: ##:
+'##:::. ##: ########::: ##::'#######: ######:::::. ###:::: ########::
+ #########: ##.....:::: ##::........: ##...:::::: ## ##::: ##.....:::
+ ##.... ##: ##::::::::: ##::::::::::: ##:::::::: ##:. ##:: ##::::::::
+ ##:::: ##: ##::::::::'####:::::::::: ########: ##:::. ##: ##::::::::
+..:::::..::..:::::::::....:::::::::::........::..:::::..::..:::::::::
+"""
+
+class TokenApiExpression:
+
+    @staticmethod
+    def replace_api_calls(line):
+        # replace '.' with '_' outside of quoted strings
+        # but DO NOT replace decimal dot cases strictly bounded by non-identifier chars:
+        # - 0.00
+        # - .00
+        # - 00.
+        in_string = False
+        string_char = ''
+        result = []
+        i = 0
+
+        def is_ident_char(ch: str) -> bool:
+            return ch.isalnum() or ch == '_'
+
+        n = len(line)
+        while i < n:
+            c = line[i]
+            if in_string:
+                result.append(c)
+                if c == string_char:
+                    in_string = False
+                elif c == '\\':
+                    i += 1
+                    if i < n:
+                        result.append(line[i])
+            else:
+                if c == '"' or c == "'":
+                    in_string = True
+                    string_char = c
+                    result.append(c)
+                elif c == '.':
+                    left_digit  = (i > 0 and line[i - 1].isdigit())
+                    right_digit = (i + 1 < n and line[i + 1].isdigit())
+
+                    if left_digit or right_digit:
+                        # 확장된 소수점 경계 검사
+                        # 왼쪽 숫자 덩어리의 바깥 경계
+                        l = i - 1
+                        while l >= 0 and line[l].isdigit():
+                            l -= 1
+                        left_boundary = line[l] if l >= 0 else None
+                        # 오른쪽 숫자 덩어리의 바깥 경계
+                        r = i + 1
+                        while r < n and line[r].isdigit():
+                            r += 1
+                        right_boundary = line[r] if r < n else None
+
+                        preserve_decimal = True
+                        # 왼쪽에 숫자가 있었다면, 그 왼쪽 바깥 경계가 식별자면 보존하지 않음
+                        if left_digit and left_boundary is not None and is_ident_char(left_boundary):
+                            preserve_decimal = False
+                        # 오른쪽에 숫자가 있었다면, 그 오른쪽 바깥 경계가 식별자면 보존하지 않음
+                        if right_digit and right_boundary is not None and is_ident_char(right_boundary):
+                            preserve_decimal = False
+
+                        if preserve_decimal:
+                            result.append('.')
+                        else:
+                            result.append('_')
+                    else:
+                        result.append('_')
+                else:
+                    result.append(c)
+            i += 1
+        return ''.join(result)
+
+    """
+    replace api call expressions like LibName->Identifier with LibName_Identifier
+    """
+    @staticmethod
+    def process(env: ProcessEnvironment) -> None:
+        for sourceCursor, sourceLine in enumerate(env.sourceLines):
+            # replace all occurrences of LibName->Identifier with LibName_Identifier
+            # * Test->First() becomes Test_First()
+            # * Test->First->Second() becomes Test_First_Second()
+
+            processedLine = TokenApiExpression.replace_api_calls(sourceLine['line'])
+            if processedLine != sourceLine['line']:
+                env.nextLines.append(
+                    {'tags': sourceLine['tags'], 'line': processedLine})
+            else:
+                env.nextLines.append(sourceLine)
+
+"""
+'##:::'##:'########:'##:::'##:'##:::::'##::'#######::'########::'########::
+ ##::'##:: ##.....::. ##:'##:: ##:'##: ##:'##.... ##: ##.... ##: ##.... ##:
+ ##:'##::: ##::::::::. ####::: ##: ##: ##: ##:::: ##: ##:::: ##: ##:::: ##:
+ #####:::: ######:::::. ##:::: ##: ##: ##: ##:::: ##: ########:: ##:::: ##:
+ ##. ##::: ##...::::::: ##:::: ##: ##: ##: ##:::: ##: ##.. ##::: ##:::: ##:
+ ##:. ##:: ##:::::::::: ##:::: ##: ##: ##: ##:::: ##: ##::. ##:: ##:::: ##:
+ ##::. ##: ########:::: ##::::. ###. ###::. #######:: ##:::. ##: ########::
+..::::..::........:::::..::::::...::...::::.......:::..:::::..::........:::
+"""
+
+class TokenCustomKeywords:
+    # static keyword mappings
+    KEYWORD_MAPPINGS = {
+        'is': '==',
+        'is\\s+not': '!=',
+        'none': '0',
+        'pass': 'return',
+        'exit': 'return',
+    }
+
+    @staticmethod
+    def process(env: ProcessEnvironment) -> None:
+        def replace_outside_quotes(line, keyword_mappings):
+            in_string = False
+            string_char = ''
+            result = ''
+            i = 0
+
+            while i < len(line):
+                c = line[i]
+                if in_string:
+                    result += c
+                    if c == string_char and (i == 0 or line[i - 1] != '\\'):  # 문자열 종료
+                        in_string = False
+                    elif c == '\\' and i + 1 < len(line):  # 이스케이프 문자 처리
+                        result += line[i + 1]
+                        i += 1
+                else:
+                    if c in ('"', "'"):  # 문자열 시작
+                        in_string = True
+                        string_char = c
+                        result += c
+                    else:
+                        # 문자열 외부에서만 키워드 치환
+                        for keyword, replacement in keyword_mappings.items():
+                            if re.match(rf'\b{keyword}\b', line[i:]):
+                                result += replacement
+                                i += len(keyword) - 1
+                                break
+                        else:
+                            result += c
+                i += 1
+            return result
+
+        for sourceCursor, sourceLine in enumerate(env.sourceLines):
+            processedLine = replace_outside_quotes(
+                sourceLine['line'], TokenCustomKeywords.KEYWORD_MAPPINGS)
+            if processedLine != sourceLine['line']:
+                env.nextLines.append(
+                    {'tags': sourceLine['tags'], 'line': processedLine})
+            else:
+                env.nextLines.append(sourceLine)
 
 """
 '##::::'##::::'###::::'####:'##::: ##:
