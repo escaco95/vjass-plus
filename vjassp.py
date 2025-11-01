@@ -3,11 +3,13 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.40
+vJASS+ Version: 3.42
 
 Author: choi-sw (escaco95@naver.com)
 
 Change Log:
+- 3.42: Added '!!' operator for boolean negation
+- 3.41: Added support for .jpcon, .jpsys, .jpdat, .jplib file extensions
 - 3.40: Changed import syntax to use quotes
 - 3.31: Added alias type support
   - 3.311: integers can be initialized with null(=0) expression
@@ -70,6 +72,37 @@ def generateUUID():
 def normalizePath(sourceFilePath):
     return os.path.abspath(sourceFilePath.replace('\\', '/'))
 
+
+def convertToIdentifierOrNone(text: str) -> str|None:
+    """
+    Convert unknown format text into PascalCase format.
+      * If the result is invalid identifier, return None.
+    Example:
+    - my_library -> MyLibrary
+      * underscores are word separators
+    - my-library -> MyLibrary
+      * hyphens are word separators
+    - my.library -> MyLibrary
+      * dots are word separators
+    - my library -> MyLibrary
+      * spaces are word separators
+    - MyLibrary -> MyLibrary
+      * it is single word and starts with capital letter
+      * so do nothing
+    - myLibrary -> MyLibrary
+      * each word must start with capital letter
+      * so capitalize the first letter of each word
+    """
+    # split by underscore, hyphen, dot, space
+    words = re.split(r'[_\-\.\s]+', text)
+    # capitalize each word
+    words = [word.capitalize() for word in words]
+    # join words
+    result = ''.join(words)
+    # check if result is a valid identifier
+    if not re.match(r'^[A-Z][a-zA-Z0-9]*$', result):
+        return None
+    return result
 
 class ProcessEnvironment:
     def __init__(self):
@@ -171,9 +204,72 @@ def compile():
         # Step 1.92: Preprocess each source file
         for sourcePath in sourceFiles:
             env.sourcePath = sourcePath
+            env.sourceLines = []
             # Read the source file
             with open(sourcePath, 'r', encoding='utf-8') as file:
-                env.sourceLines = [{'tags': {}, 'cursor': sourceCursor, 'line': sourceLine}
+                # Preprocessing by file extension
+                # - .jp : normal vJASS+ file
+                # - .jpcon : vJASS+ content file
+                # - .jpsys : vJASS+ system file
+                # - .jpdat : vJASS+ data file
+                # - .jplib : vJASS+ library file
+                #   * try to convert filename into proper identifier(snake_case to PascalCase)
+                #   * if fails, it will be converted into anonymous content block
+                #       * if it was not content file, an error will be raised
+                #   * append indentation to each line
+                prefixLines = []
+                indentation = ''
+
+                
+                try:
+                    if sourcePath.endswith('.jpcon'):
+                        blockName = os.path.splitext(
+                            os.path.basename(sourcePath))[0]
+                        blockName = convertToIdentifierOrNone(blockName)
+                        if blockName is None:
+                            prefixLines.append(f'content:')
+                        else:
+                            prefixLines.append(f'content {blockName}:')
+                        indentation = '    '
+                    elif sourcePath.endswith('.jpsys'):
+                        blockName = os.path.splitext(
+                            os.path.basename(sourcePath))[0]
+                        blockName = convertToIdentifierOrNone(blockName)
+                        if blockName is None:
+                            raise DslSyntaxError(
+                                sourcePath, 0, '', f'System file name must be a valid identifier: "{os.path.basename(sourcePath)}"')
+                        prefixLines.append(f'system {blockName}:')
+                        indentation = '    '
+                    elif sourcePath.endswith('.jpdat'):
+                        blockName = os.path.splitext(
+                            os.path.basename(sourcePath))[0]
+                        blockName = convertToIdentifierOrNone(blockName)
+                        if blockName is None:
+                            raise DslSyntaxError(
+                                sourcePath, 0, '', f'Data file name must be a valid identifier: "{os.path.basename(sourcePath)}"')
+                        prefixLines.append(f'data {blockName}:')
+                        indentation = '    '
+                    elif sourcePath.endswith('.jplib'):
+                        blockName = os.path.splitext(
+                            os.path.basename(sourcePath))[0]
+                        blockName = convertToIdentifierOrNone(blockName)
+                        if blockName is None:
+                            raise DslSyntaxError(
+                                sourcePath, 0, '', f'Library file name must be a valid identifier: "{os.path.basename(sourcePath)}"')
+                        prefixLines.append(f'library {blockName}:')
+                        indentation = '    '
+                except DslSyntaxError as e:
+                    print(f'Syntax Error (most recent call last):')
+                    print(f'  {e}')
+                    sys.exit(1)
+
+                # add prefix lines (as fixed line number 0)
+                for prefixLine in prefixLines:
+                    env.sourceLines.append(
+                        {'tags': {}, 'cursor': 0, 'line': prefixLine})
+
+                # append source lines with indentation
+                env.sourceLines += [{'tags': {}, 'cursor': sourceCursor, 'line': f'{indentation}{sourceLine}'}
                                    for sourceCursor, sourceLine in enumerate(file.read().splitlines())]
 
             # Preprocess each preprocessor
@@ -326,6 +422,14 @@ class TokenComment:
 
 
 class TokenImport:
+    # supported file extensions
+    SUPPORTED_EXTENSIONS = ['.jp', '.jpcon', '.jpsys', '.jpdat', '.jplib']
+
+    @staticmethod
+    def __is_importable_file(filePath: str) -> bool:
+        # check if vjass-plus supports the file extension
+        return any(filePath.endswith(ext) for ext in TokenImport.SUPPORTED_EXTENSIONS)
+
     @staticmethod
     def preprocess(env: ProcessEnvironment) -> None:
         for sourceCursor, sourceLine in enumerate(env.sourceLines):
@@ -352,7 +456,7 @@ class TokenImport:
                 elif importMass == '/*':
                     for root, dirs, files in os.walk(importPath):
                         for file in files:
-                            if file.endswith('.jp'):
+                            if TokenImport.__is_importable_file(file):
                                 # normalize path
                                 file = normalizePath(
                                     os.path.join(root, file))
@@ -364,7 +468,7 @@ class TokenImport:
                         currentDir = recursiveDirs.pop()
                         for root, dirs, files in os.walk(currentDir):
                             for file in files:
-                                if file.endswith('.jp'):
+                                if TokenImport.__is_importable_file(file):
                                     # normalize path
                                     file = normalizePath(
                                         os.path.join(root, file))
@@ -1586,7 +1690,7 @@ class TokenCodePrefix:
 
                 # variable assignment
                 match = re.match(
-                    r'^(?P<indent> *)(?P<name>[a-zA-Z][a-zA-Z0-9_.\[\]]*)\s*(?P<operator>=|\+\+|\-\-|\*\*|//|\+=|\-=|\*=|/=)\s*(?P<value>.*)$', sourceLine['line'])
+                    r'^(?P<indent> *)(?P<name>[a-zA-Z][a-zA-Z0-9_.\[\]]*)\s*(?P<operator>=|\+\+|\-\-|\*\*|!!|//|\+=|\-=|\*=|/=)\s*(?P<value>.*)$', sourceLine['line'])
                 if match:
                     variableIndent = match.group('indent')
                     variableName = match.group('name')
@@ -1608,6 +1712,9 @@ class TokenCodePrefix:
                     elif variableOperator == '//':
                         env.nextLines.append(
                             {'tags': sourceLine['tags'], 'line': f'{variableIndent}set {variableName} = {variableName} / 2'})
+                    elif variableOperator == '!!':
+                        env.nextLines.append(
+                            {'tags': sourceLine['tags'], 'line': f'{variableIndent}set {variableName} = not {variableName}'})
                     elif variableOperator == '+=':
                         env.nextLines.append(
                             {'tags': sourceLine['tags'], 'line': f'{variableIndent}set {variableName} = {variableName} + {variableValue}'})
