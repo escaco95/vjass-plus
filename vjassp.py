@@ -151,8 +151,9 @@ class ProcessEnvironment:
 def compile():
     # if there is no argument, print usage
     if len(sys.argv) < 2:
-        print("Usage: python vjassp.py <source_path>")
-        print("Usage: python vjassp.py <source_path> DEBUG REFORGED JN")
+        file_name = os.path.basename(__file__)
+        print(f"Usage: python {file_name} <source_path>")
+        print(f"Usage: python {file_name} <source_path> DEBUG REFORGED JN")
         sys.exit(1)
 
     # use the first argument as the source path
