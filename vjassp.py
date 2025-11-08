@@ -343,7 +343,7 @@ def compile():
                 env.sourceGroup[sourcePath]['sourcelines'] = env.sourceLines
 
     # Step 2.9: merge all source files into one
-    finalLines = vjassLines.copy()
+    finalLines = []
     for sourcePath in sourceFiles:
         # add the source lines to the final lines
         for sourceLine in env.sourceGroup[sourcePath]['sourcelines']:
@@ -369,7 +369,10 @@ def compile():
         finalLines.append(f'endlibrary')
 
     # Step 4: finalize the source file
-    # Step 4.1: append empty line if the last line is not empty
+    # Step 4.1: add raw vjass lines
+    if vjassLines:
+        finalLines += vjassLines
+    # Step 4.2: append empty line if the last line is not empty
     if not finalLines or not finalLines[-1].endswith('\n'):
         finalLines.append('')
 
