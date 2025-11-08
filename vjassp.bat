@@ -1,2 +1,4 @@
+:: run vjassp.ps1 with arguments
 @echo off
-python vjassp.py %*
+powershell -ExecutionPolicy Bypass -File "%~dp0vjassp.ps1" %*
+pause
