@@ -3,11 +3,12 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.52
+vJASS+ Version: 3.53
 
 Author: choi-sw (escaco95@naver.com)
 
 Change Log:
+- 3.53: Added multi-language support
 - 3.52: Added support for .j file import
 - 3.51: Changed macro arguments to literal string
   - 3.511: Added support for global block alignment
@@ -151,9 +152,8 @@ class ProcessEnvironment:
 def compile():
     # if there is no argument, print usage
     if len(sys.argv) < 2:
-        file_name = os.path.basename(__file__)
-        print(f"Usage: python {file_name} <source_path>")
-        print(f"Usage: python {file_name} <source_path> DEBUG REFORGED JN")
+        print("Usage: python vjassp.py <source_path>")
+        print("Usage: python vjassp.py <source_path> DEBUG REFORGED JN")
         sys.exit(1)
 
     # use the first argument as the source path
@@ -448,7 +448,8 @@ class TokenComment:
 
 class TokenImport:
     # supported file extensions
-    SUPPORTED_EXTENSIONS = ['.j', '.jp', '.jpcon', '.jpsys', '.jpdat', '.jplib']
+    SUPPORTED_EXTENSIONS = ['.j', '.jp',
+                            '.jpcon', '.jpsys', '.jpdat', '.jplib']
 
     @staticmethod
     def __is_importable_file(filePath: str) -> bool:
@@ -756,6 +757,80 @@ class TokenMacro:
 
             # anything else
             env.nextLines.append(sourceLine)
+
+
+"""
+'##::::'##:'##::::'##:'##:::::::'########:'####:'##::::::::::'###::::'##::: ##::'######:::
+ ###::'###: ##:::: ##: ##:::::::... ##..::. ##:: ##:::::::::'## ##::: ###:: ##:'##... ##::
+ ####'####: ##:::: ##: ##:::::::::: ##::::: ##:: ##::::::::'##:. ##:: ####: ##: ##:::..:::
+ ## ### ##: ##:::: ##: ##:::::::::: ##::::: ##:: ##:::::::'##:::. ##: ## ## ##: ##::'####:
+ ##. #: ##: ##:::: ##: ##:::::::::: ##::::: ##:: ##::::::: #########: ##. ####: ##::: ##::
+ ##:.:: ##: ##:::: ##: ##:::::::::: ##::::: ##:: ##::::::: ##.... ##: ##:. ###: ##::: ##::
+ ##:::: ##:. #######:: ########:::: ##::::'####: ########: ##:::: ##: ##::. ##:. ######:::
+..:::::..:::.......:::........:::::..:::::....::........::..:::::..::..::::..:::......::::
+"""
+
+
+class TokenUnicodeChar:
+    """
+    Originally, vJASS only supports ASCII characters.
+    This processor converts non-ascii characters into ascii allowed characters.
+    """
+    # static dictionary to hold character mapping
+    charMapping = {}
+    charCounter = 1
+
+    @staticmethod
+    def conv(char: str) -> str:
+        if char in TokenUnicodeChar.charMapping:
+            return TokenUnicodeChar.charMapping[char]
+        else:
+            # generate new mapping
+            mapping = f'U{TokenUnicodeChar.charCounter:03d}'
+            TokenUnicodeChar.charMapping[char] = mapping
+            TokenUnicodeChar.charCounter += 1
+            return mapping
+
+    @staticmethod
+    def process(env: ProcessEnvironment) -> None:
+        """
+        WARN:
+        - do not convert inside string literals
+        - do not convert inside single quote literals
+        """
+        for sourceLine in env.sourceLines:
+            lineText = sourceLine['line']
+            newLineText = ''
+            inString = False
+            stringChar = None
+            i = 0
+
+            while i < len(lineText):
+                char = lineText[i]
+
+                if inString:
+                    newLineText += char
+                    # 이스케이프 문자 처리
+                    if char == '\\' and i + 1 < len(lineText):
+                        i += 1
+                        newLineText += lineText[i]
+                    elif char == stringChar:
+                        inString = False
+                        stringChar = None
+                else:
+                    if char in ('"', "'"):
+                        inString = True
+                        stringChar = char
+                        newLineText += char
+                    elif not (0x20 <= ord(char) <= 0x7E):
+                        newLineText += TokenUnicodeChar.conv(char)
+                    else:
+                        newLineText += char
+
+                i += 1
+
+            env.nextLines.append(
+                {'tags': sourceLine['tags'], 'cursor': sourceLine['cursor'], 'line': newLineText})
 
 
 """

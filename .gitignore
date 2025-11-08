@@ -1,0 +1,5 @@
+# exclude embedded Python execution files
+python/
+
+# exclude compiled vJass+ files
+main.j

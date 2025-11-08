@@ -29,6 +29,7 @@ $chosen = $null
 
 # 1) Try PATH python
 if (Test-Python312 'python') {
+    Write-Host "Using python from PATH"
     $chosen = 'python'
 }
 
