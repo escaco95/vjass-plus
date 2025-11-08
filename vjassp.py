@@ -3,11 +3,13 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.551
+vJASS+ Version: 3.561
 
 Author: choi-sw (escaco95@naver.com)
 
 Change Log:
+- 3.56: Added support for static if/elseif/else blocks
+  - 3.561: Added support for function existence check in if condition
 - 3.55: Added prefix syntax for *. support
   - 3.551: Fixed bug with macro/prefix build conflict
 - 3.54: Added support '(' ',' '\\' for line continuation
@@ -1912,7 +1914,7 @@ class TokenIfBlock:
         for sourceCursor, sourceLine in enumerate(env.sourceLines):
             # match if condition_expression: block
             match = re.match(
-                r'^(?P<indent> *)if\s+(?P<condition>.*?):\s*$', sourceLine['line'])
+                r'^(?P<indent> *)(?P<static>static +)?if\s+(?P<condition>.*?):\s*$', sourceLine['line'])
             if match:
                 ifIndent = match.group('indent')
                 ifIndentLevel = len(ifIndent) // 4
@@ -1923,9 +1925,16 @@ class TokenIfBlock:
                     'indentLevel': ifIndentLevel,
                     'tags': {**sourceLine['tags']},
                 })
+                ifStatic = match.group('static')
                 conditionExpression = match.group('condition')
+
+                conditionLine = f'{ifIndent}'
+                if ifStatic:
+                    conditionLine += 'static '
+                conditionLine += f'if {conditionExpression} then'
+
                 env.nextLines.append(
-                    {'tags': {**sourceLine['tags']}, 'line': f'{ifIndent}if {conditionExpression} then'})
+                    {'tags': {**sourceLine['tags']}, 'line': conditionLine})
                 continue
 
             # match elseif condition_expression: block
@@ -1936,8 +1945,10 @@ class TokenIfBlock:
                 closeIfBlocks(ifBlockStack, env, len(
                     match.group('indent')) // 4 + 1)
                 conditionExpression = match.group('condition')
+                fullExpression = "    "*ifBlockStack[-1]["indentLevel"]
+                fullExpression += f'elseif {conditionExpression} then'
                 env.nextLines.append(
-                    {'tags': {**sourceLine['tags']}, 'line': f'{"    "*ifBlockStack[-1]["indentLevel"]}elseif {conditionExpression} then'})
+                    {'tags': {**sourceLine['tags']}, 'line': fullExpression})
                 continue
 
             # match else: block
@@ -2523,6 +2534,61 @@ class TokenCustomKeywords:
                     {'tags': {**sourceLine['tags']}, 'line': processedLine})
             else:
                 env.nextLines.append(sourceLine)
+
+
+"""
+:'######::'########::::'###::::'########:'####::'######:::::'####:'########:
+'##... ##:... ##..::::'## ##:::... ##..::. ##::'##... ##::::. ##:: ##.....::
+ ##:::..::::: ##:::::'##:. ##::::: ##::::: ##:: ##:::..:::::: ##:: ##:::::::
+. ######::::: ##::::'##:::. ##:::: ##::::: ##:: ##::::::::::: ##:: ######:::
+:..... ##:::: ##:::: #########:::: ##::::: ##:: ##::::::::::: ##:: ##...::::
+'##::: ##:::: ##:::: ##.... ##:::: ##::::: ##:: ##::: ##::::: ##:: ##:::::::
+. ######::::: ##:::: ##:::: ##:::: ##::::'####:. ######:::::'####: ##:::::::
+:......::::::..:::::..:::::..:::::..:::::....:::......::::::....::..::::::::
+"""
+
+
+class TokenStaticIf:
+    @staticmethod
+    def process(env: ProcessEnvironment) -> None:
+        """
+        Process vjass+ static if condition expressions:
+        - <identifier>()_exists
+        """
+        # scan all existing functions to build a set of existing identifiers
+        existingFunctions = set()
+        for sourceLine in env.sourceLines:
+            match = re.match(
+                r'^(?P<indent> *)(?:(?P<modifier>private|public)\s+)?function\s+(?P<name>[a-zA-Z][a-zA-Z0-9_]*) +takes', sourceLine['line'])
+            if match:
+                functionName = match.group('name')
+                existingFunctions.add(functionName)
+
+        for sourceCursor, sourceLine in enumerate(env.sourceLines):
+            lineText = sourceLine['line']
+            # match static if <any> then
+            match = re.match(
+                r'^(?P<indent> *)(?P<condtype>static +if|if|elseif)\s+(?P<condition>.+?)\s+then\s*$', lineText)
+            if match:
+                # try check condition expression for known patterns
+                # <identifier>()_exists
+                fullCondition = match.group('condition')
+                identifiers = re.findall(
+                    r'(?P<identifier>[a-zA-Z_][a-zA-Z0-9_]*)\( *\)_exists\b', fullCondition)
+                
+                for identifier in identifiers:
+                    resultCondition = 'true' if identifier in existingFunctions else 'false'
+                    # replace all occurrences of <identifier>()_exists with resultCondition
+                    fullCondition = re.sub(
+                        rf'\b{identifier}\( *\)_exists\b', resultCondition, fullCondition)
+            
+                indent = match.group('indent')
+                env.nextLines.append(
+                    {'tags': {**sourceLine['tags']}, 'line': f'{indent}{match.group("condtype")} {fullCondition} then'})
+                continue
+
+            # anything else
+            env.nextLines.append(sourceLine)
 
 
 """
