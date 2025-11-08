@@ -3,13 +3,15 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.561
+vJASS+ Version: 3.562
 
 Author: choi-sw (escaco95@naver.com)
+Special Thanks: eeh (aka Vn)
 
 Change Log:
 - 3.56: Added support for static if/elseif/else blocks
   - 3.561: Added support for function existence check in if condition
+  - 3.562: Added dot identifier support in macro definition
 - 3.55: Added prefix syntax for *. support
   - 3.551: Fixed bug with macro/prefix build conflict
 - 3.54: Added support '(' ',' '\\' for line continuation
@@ -672,7 +674,7 @@ class TokenMacro:
 
             # match macro statement
             match = re.match(
-                r'^(?P<indent> *)macro\s+(?P<name>[a-zA-Z_][a-zA-Z0-9_]*)(\((?P<args>.*)\))?\s*:\s*$', sourceLine['line'])
+                r'^(?P<indent> *)macro\s+(?P<name>[a-zA-Z_][a-zA-Z0-9_.]*)(\((?P<args>.*)\))?\s*:\s*$', sourceLine['line'])
             if match:
                 # if there was no block, raise syntax error
                 if not codeBlockInfoStack:
@@ -904,7 +906,7 @@ class TokenUnicodeChar:
 
                 if inString:
                     newLineText += char
-                    # 이스케이프 문자 처리
+                    # escape character handling
                     if char == '\\' and i + 1 < len(lineText):
                         i += 1
                         newLineText += lineText[i]
@@ -1001,7 +1003,7 @@ class TokenPrefix:
 
                 if inString:
                     newLineText += char
-                    # 이스케이프 문자 처리
+                    # escape character handling
                     if char == '\\' and i + 1 < len(lineText):
                         i += 1
                         newLineText += lineText[i]
@@ -2182,7 +2184,7 @@ class TokenFormatStrings:
                     depth = 0
                     while i < len(s):
                         c = s[i]
-                        if c == '\\':       # 이스케이프 무시
+                        if c == '\\':       # ignore escaped chars
                             i += 2
                             continue
                         if c == '{':
