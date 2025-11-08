@@ -3,7 +3,7 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.55
+vJASS+ Version: 3.551
 
 Author: choi-sw (escaco95@naver.com)
 
