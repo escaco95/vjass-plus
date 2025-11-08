@@ -8,6 +8,7 @@ vJASS+ Version: 3.511
 Author: choi-sw (escaco95@naver.com)
 
 Change Log:
+- 3.52: Added support for .j file import
 - 3.51: Changed macro arguments to literal string
   - 3.511: Added support for global block alignment
 - 3.50: Added support for dot in identifier names
@@ -205,6 +206,7 @@ def compile():
         print(f'    {processor.__qualname__}() ({index + 1})')
 
     # Step 1.9: Preprocess all source files
+    vjassLines = []
     while True:
         # Step 1.91: Find all source files that are not preprocessed
         sourceFiles = [path for path,
@@ -219,6 +221,7 @@ def compile():
             # Read the source file
             with open(sourcePath, 'r', encoding='utf-8') as file:
                 # Preprocessing by file extension
+                # - .j : normal vJASS file
                 # - .jp : normal vJASS+ file
                 # - .jpcon : vJASS+ content file
                 # - .jpsys : vJASS+ system file
@@ -232,7 +235,15 @@ def compile():
                 indentation = ''
 
                 try:
-                    if sourcePath.endswith('.jpcon'):
+                    if sourcePath.endswith('.j'):
+                        # normal vJASS file, add to non-compiled source directly
+                        lines = file.read().splitlines()
+                        vjassLines += lines
+                        # mark as preprocessed
+                        env.sourceGroup[sourcePath]['preprocessed'] = True
+                        env.sourceGroup[sourcePath]['sourcelines'] = []
+                        continue
+                    elif sourcePath.endswith('.jpcon'):
                         blockName = os.path.splitext(
                             os.path.basename(sourcePath))[0]
                         blockName = convertToIdentifierOrNone(blockName)
@@ -332,7 +343,7 @@ def compile():
                 env.sourceGroup[sourcePath]['sourcelines'] = env.sourceLines
 
     # Step 2.9: merge all source files into one
-    finalLines = []
+    finalLines = vjassLines.copy()
     for sourcePath in sourceFiles:
         # add the source lines to the final lines
         for sourceLine in env.sourceGroup[sourcePath]['sourcelines']:
@@ -359,7 +370,7 @@ def compile():
 
     # Step 4: finalize the source file
     # Step 4.1: append empty line if the last line is not empty
-    if not finalLines[-1].endswith('\n'):
+    if not finalLines or not finalLines[-1].endswith('\n'):
         finalLines.append('')
 
     # write the final text to a file with same directory with .j extension
@@ -433,7 +444,7 @@ class TokenComment:
 
 class TokenImport:
     # supported file extensions
-    SUPPORTED_EXTENSIONS = ['.jp', '.jpcon', '.jpsys', '.jpdat', '.jplib']
+    SUPPORTED_EXTENSIONS = ['.j', '.jp', '.jpcon', '.jpsys', '.jpdat', '.jplib']
 
     @staticmethod
     def __is_importable_file(filePath: str) -> bool:
