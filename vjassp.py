@@ -3,11 +3,13 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.53
+vJASS+ Version: 3.55
 
 Author: choi-sw (escaco95@naver.com)
 
 Change Log:
+- 3.55: Added prefix syntax for *. support
+- 3.54: Added support '(' ',' '\\' for line continuation
 - 3.53: Added multi-language support
 - 3.52: Added support for .j file import
 - 3.51: Changed macro arguments to literal string
@@ -521,6 +523,70 @@ class TokenImport:
 
 
 """
+'##::::::::::::'##::::'##:'########:'########:::'######:::'########:'########::
+ ##:::::::::::: ###::'###: ##.....:: ##.... ##:'##... ##:: ##.....:: ##.... ##:
+ ##:::::::::::: ####'####: ##::::::: ##:::: ##: ##:::..::: ##::::::: ##:::: ##:
+ ##:::::::::::: ## ### ##: ######::: ########:: ##::'####: ######::: ########::
+ ##:::::::::::: ##. #: ##: ##...:::: ##.. ##::: ##::: ##:: ##...:::: ##.. ##:::
+ ##:::::::'###: ##:.:: ##: ##::::::: ##::. ##:: ##::: ##:: ##::::::: ##::. ##::
+ ########: ###: ##:::: ##: ########: ##:::. ##:. ######::: ########: ##:::. ##:
+........::...::..:::::..::........::..:::::..:::......::::........::..:::::..::
+"""
+
+
+class TokenLineMerger:
+    """
+    if line ends with '(' or ',', merge it with the next line
+    if line ends with '\\', merge it with the next line and remove the '\\' 
+    p.s) if line ends with ',' and next line starts with ')', remove the ','
+    """
+    @staticmethod
+    def preprocess(env: ProcessEnvironment) -> None:
+        mergedLine = None
+        for sourceIndex, sourceLine in enumerate(env.sourceLines):
+            lineText = sourceLine['line']
+            performMerge = False
+            performRemove = False
+            if lineText.rstrip().endswith('\\'):
+                performMerge = True
+                performRemove = True
+            elif lineText.rstrip().endswith('(') or lineText.rstrip().endswith(','):
+                performMerge = True
+
+            if sourceIndex + 1 < len(env.sourceLines):
+                nextLineText = env.sourceLines[sourceIndex + 1]['line']
+                if performMerge and lineText.rstrip().endswith(',') and nextLineText.lstrip().startswith(')'):
+                    performRemove = True
+                elif not performMerge and nextLineText.lstrip().startswith('or'):
+                    performMerge = True
+                elif not performMerge and nextLineText.lstrip().startswith('and'):
+                    performMerge = True
+
+            if performMerge:
+                if performRemove:
+                    lineText = lineText.rstrip()[:-1]
+                if mergedLine is None:
+                    mergedLine = {
+                        'tags': sourceLine['tags'],
+                        'cursor': sourceLine['cursor'],
+                        'line': lineText.rstrip()
+                    }
+                else:
+                    mergedLine['line'] += ' ' + lineText.lstrip()
+                    mergedLine['line'] = mergedLine['line'].rstrip()
+            else:
+                # if there is a merged line, add it to the next lines
+                if mergedLine:
+                    mergedLine['line'] += ' ' + lineText.lstrip()
+                    env.nextLines.append(mergedLine)
+                    mergedLine = None
+                else:
+                    env.nextLines.append(sourceLine)
+        if mergedLine:
+            env.nextLines.append(mergedLine)
+
+
+"""
 :::::::::'##::::'##::::'###:::::'######::'########:::'#######::
 ::::::::: ###::'###:::'## ##:::'##... ##: ##.... ##:'##.... ##:
 ::::::::: ####'####::'##:. ##:: ##:::..:: ##:::: ##: ##:::: ##:
@@ -829,6 +895,108 @@ class TokenUnicodeChar:
 
                 i += 1
 
+            env.nextLines.append(
+                {'tags': sourceLine['tags'], 'cursor': sourceLine['cursor'], 'line': newLineText})
+
+
+"""
+'########::'########::'########:'########:'####:'##::::'##:
+ ##.... ##: ##.... ##: ##.....:: ##.....::. ##::. ##::'##::
+ ##:::: ##: ##:::: ##: ##::::::: ##:::::::: ##:::. ##'##:::
+ ########:: ########:: ######::: ######:::: ##::::. ###::::
+ ##.....::: ##.. ##::: ##...:::: ##...::::: ##:::: ## ##:::
+ ##:::::::: ##::. ##:: ##::::::: ##:::::::: ##::: ##:. ##::
+ ##:::::::: ##:::. ##: ########: ##:::::::'####: ##:::. ##:
+..:::::::::..:::::..::........::..::::::::....::..:::::..::
+"""
+
+
+class TokenPrefix:
+    """
+    syntax: prefix <text>:
+    prefix block cannot be nested.
+    prefix block effects until meet a line with same or less indent level.
+    prefix block itself is not included in the output.
+    prefix block reduces indent level by 1.(4 spaces)
+    prefix block replaces every '*.' with '<text>.'
+    * but not inside quote, double quote literals
+    """
+    @staticmethod
+    def preprocess(env: ProcessEnvironment) -> None:
+        lastPrefixLine = None
+        for sourceLine in env.sourceLines:
+            lineText = sourceLine['line']
+
+            # check prefix block exit
+            if lastPrefixLine is not None:
+                lastPrefixText = lastPrefixLine['line']
+                match = re.match(r'^(?P<indent> *)', lastPrefixText)
+                lastPrefixIndentLevel = len(match.group('indent')) // 4
+                match = re.match(r'^(?P<indent> *)', lineText)
+                indentLevel = len(match.group('indent')) // 4
+                if indentLevel <= lastPrefixIndentLevel:
+                    lastPrefixLine = None
+
+            # check prefix block entry
+            match = re.match(
+                r'^(?P<indent> *)prefix\s+(?P<prefixText>.*?)\s*:\s*$', lineText)
+            if match:
+                if lastPrefixLine is not None:
+                    raise DslSyntaxError(
+                        env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Prefix blocks cannot be nested')
+                # if prefixText is empty, raise syntax error
+                prefixText = match.group('prefixText')
+                if prefixText.strip() == '':
+                    raise DslSyntaxError(
+                        env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Prefix cannot be empty')
+                # if prefixText is not proper identifier, raise syntax error
+                if not re.match(r'^[a-zA-Z][a-zA-Z0-9_.]*$', prefixText):
+                    raise DslSyntaxError(
+                        env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Prefix must be a valid identifier')
+                lastPrefixLine = sourceLine
+                continue
+
+            # do nothing if not in prefix block
+            if lastPrefixLine is None:
+                env.nextLines.append(sourceLine)
+                continue
+
+            # in prefix block, replace all '*.' with '<prefixText>.'
+            prefixText = lastPrefixLine['line'].strip().split()[1][:-1]
+            newLineText = ''
+            inString = False
+            stringChar = None
+            i = 0
+            while i < len(lineText):
+                char = lineText[i]
+
+                if inString:
+                    newLineText += char
+                    # 이스케이프 문자 처리
+                    if char == '\\' and i + 1 < len(lineText):
+                        i += 1
+                        newLineText += lineText[i]
+                    elif char == stringChar:
+                        inString = False
+                        stringChar = None
+                else:
+                    if char in ('"', "'"):
+                        inString = True
+                        stringChar = char
+                        newLineText += char
+                    elif char == '*' and i + 1 < len(lineText) and lineText[i + 1] == '.':
+                        newLineText += f'{prefixText}.'
+                        i += 1  # skip the '.'
+                    else:
+                        newLineText += char
+
+                i += 1
+
+            # in prefix block, dedent line by 1 level
+            match = re.match(r'^(?P<indent> *)', newLineText)
+            indentLevel = len(match.group('indent')) // 4
+            if indentLevel > 0:
+                newLineText = newLineText[4:]
             env.nextLines.append(
                 {'tags': sourceLine['tags'], 'cursor': sourceLine['cursor'], 'line': newLineText})
 
