@@ -9,6 +9,7 @@ Author: choi-sw (escaco95@naver.com)
 
 Change Log:
 - 3.55: Added prefix syntax for *. support
+  - 3.551: Fixed bug with macro/prefix build conflict
 - 3.54: Added support '(' ',' '\\' for line continuation
 - 3.53: Added multi-language support
 - 3.52: Added support for .j file import
@@ -168,6 +169,7 @@ def compile():
     # and add them to the tokenProcessors list
     # get all classes in this file
     preprocessors = []
+    postpreprocessors = []
     processors = []
     classes = [cls for name, cls in globals().items(
     ) if inspect.isclass(cls) and cls.__module__ == __name__]
@@ -176,6 +178,8 @@ def compile():
         for name, method in inspect.getmembers(cls, predicate=inspect.isfunction):
             if name == 'process' and method.__code__.co_argcount == 1:
                 processors.append(method)
+            elif name == 'postpreprocess' and method.__code__.co_argcount == 1:
+                postpreprocessors.append(method)
             elif name == 'preprocess' and method.__code__.co_argcount == 1:
                 preprocessors.append(method)
 
@@ -204,6 +208,9 @@ def compile():
     print(f'  Preprocessors: {len(preprocessors)}')
     for index, preprocessor in enumerate(preprocessors):
         print(f'    {preprocessor.__qualname__}() ({index + 1})')
+    print(f'  Postpreprocessors: {len(postpreprocessors)}')
+    for index, postpreprocessor in enumerate(postpreprocessors):
+        print(f'    {postpreprocessor.__qualname__}() ({index + 1})')
     print(f'  Processors: {len(processors)}')
     for index, processor in enumerate(processors):
         print(f'    {processor.__qualname__}() ({index + 1})')
@@ -326,6 +333,25 @@ def compile():
     # Step 2: Compile until all source files are compiled
     sourceFiles = [path for path, info in env.sourceGroup.items()]
     if sourceFiles:
+        # Step 2.0: postpreprocess each source file
+        for tokenPostpreprocessor in postpreprocessors:
+            for sourcePath in sourceFiles:
+                env.sourcePath = sourcePath
+                env.sourceLines = env.sourceGroup[sourcePath]['sourcelines']
+
+                try:
+                    env.nextLines = []
+                    tokenPostpreprocessor(env)
+                    env.sourceLines = env.nextLines
+                except DslSyntaxError as e:
+                    print(f'Syntax Error (most recent call last):')
+                    print(f'  {e}')
+                    sys.exit(1)
+                except Exception as e:
+                    raise e
+
+                env.sourceGroup[sourcePath]['sourcelines'] = env.sourceLines
+
         # Step 2.1: compile each source file
         for tokenProcessor in processors:
             for sourcePath in sourceFiles:
@@ -430,7 +456,7 @@ class TokenComment:
             if match:
                 code = match.group('code')
                 env.nextLines.append(
-                    {'tags': sourceLine['tags'], 'cursor': sourceLine['cursor'], 'line': code})
+                    {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': code})
                 continue
             # anything else
             env.nextLines.append(sourceLine)
@@ -567,7 +593,7 @@ class TokenLineMerger:
                     lineText = lineText.rstrip()[:-1]
                 if mergedLine is None:
                     mergedLine = {
-                        'tags': sourceLine['tags'],
+                        'tags': {**sourceLine['tags']},
                         'cursor': sourceLine['cursor'],
                         'line': lineText.rstrip()
                     }
@@ -709,14 +735,14 @@ class TokenMacro:
                                                     macroInfo['indentLevel']:]
 
                 macroInfo['bodyLines'].append(
-                    {'tags': sourceLine['tags'], 'cursor': sourceLine['cursor'], 'line': unindentedLine})
+                    {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': unindentedLine})
                 continue
 
             # anything else
             env.nextLines.append(sourceLine)
 
     @staticmethod
-    def process(env: ProcessEnvironment) -> None:
+    def postpreprocess(env: ProcessEnvironment) -> None:
         codeBlockInfoStack = []
         for sourceLine in env.sourceLines:
             # if code block stack is not empty and this line have same or less indent level
@@ -818,7 +844,7 @@ class TokenMacro:
                         r'\$(?P<argName>[a-zA-Z_][a-zA-Z0-9_]*)\$', lambda m: macroArgs[macroInfoArgs.index(m.group('argName'))], macroLineText)
 
                     env.nextLines.append(
-                        {'tags': sourceLine['tags'], 'cursor': macroBodyCursor, 'line': macroLineText})
+                        {'tags': {**sourceLine['tags']}, 'cursor': macroBodyCursor, 'line': macroLineText})
                 continue
 
             # anything else
@@ -896,7 +922,7 @@ class TokenUnicodeChar:
                 i += 1
 
             env.nextLines.append(
-                {'tags': sourceLine['tags'], 'cursor': sourceLine['cursor'], 'line': newLineText})
+                {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': newLineText})
 
 
 """
@@ -922,7 +948,7 @@ class TokenPrefix:
     * but not inside quote, double quote literals
     """
     @staticmethod
-    def preprocess(env: ProcessEnvironment) -> None:
+    def postpreprocess(env: ProcessEnvironment) -> None:
         lastPrefixLine = None
         for sourceLine in env.sourceLines:
             lineText = sourceLine['line']
@@ -958,7 +984,8 @@ class TokenPrefix:
 
             # do nothing if not in prefix block
             if lastPrefixLine is None:
-                env.nextLines.append(sourceLine)
+                env.nextLines.append(
+                    {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': lineText})
                 continue
 
             # in prefix block, replace all '*.' with '<prefixText>.'
@@ -998,7 +1025,7 @@ class TokenPrefix:
             if indentLevel > 0:
                 newLineText = newLineText[4:]
             env.nextLines.append(
-                {'tags': sourceLine['tags'], 'cursor': sourceLine['cursor'], 'line': newLineText})
+                {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': newLineText})
 
 
 """
@@ -1057,7 +1084,7 @@ class TokenModifierBlock:
                 indentLevel = len(match.group('indent')) // 4
                 if indentLevel > 1:
                     env.nextLines.append(
-                        {'tags': sourceLine['tags'], 'cursor': sourceLine['cursor'], 'line': f'{sourceLine["line"][4:]}'})
+                        {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': f'{sourceLine["line"][4:]}'})
                 else:
                     env.nextLines.append(sourceLine)
                 continue
@@ -1602,7 +1629,7 @@ class TokenFunction:
                     'returns': functionReturns,
                 }
                 env.nextLines.append(
-                    {'tags': sourceLine['tags'], 'line': f'{functionIndent}{functionModifier}function {functionInfo["name"]} takes {functionInfo["takes"]} returns {functionInfo["returns"]}'})
+                    {'tags': {**sourceLine['tags']}, 'line': f'{functionIndent}{functionModifier}function {functionInfo["name"]} takes {functionInfo["takes"]} returns {functionInfo["returns"]}'})
                 continue
 
             # anything else
@@ -1693,7 +1720,7 @@ class TokenVariable:
                     variableResult += f'{variableType} {variableName} = {variableValue}'
 
                 env.nextLines.append(
-                    {'tags': sourceLine['tags'], 'line': variableResult})
+                    {'tags': {**sourceLine['tags']}, 'line': variableResult})
                 continue
 
             # anything else
@@ -1750,7 +1777,7 @@ class TokenLoops:
                     'indentLevel': loopIndentLevel,
                 })
                 env.nextLines.append(
-                    {'tags': sourceLine['tags'], 'line': f'{loopIndent}loop'})
+                    {'tags': {**sourceLine['tags']}, 'line': f'{loopIndent}loop'})
                 continue
 
             # match while condition_expression: block
@@ -1765,9 +1792,9 @@ class TokenLoops:
                 })
                 conditionExpression = match.group('condition')
                 env.nextLines.append(
-                    {'tags': sourceLine['tags'], 'line': f'{loopIndent}loop'})
+                    {'tags': {**sourceLine['tags']}, 'line': f'{loopIndent}loop'})
                 env.nextLines.append(
-                    {'tags': sourceLine['tags'], 'line': f'{loopIndent}    exitwhen not ({conditionExpression})'})
+                    {'tags': {**sourceLine['tags']}, 'line': f'{loopIndent}    exitwhen not ({conditionExpression})'})
                 continue
 
             # match until condition_expression: block
@@ -1782,9 +1809,9 @@ class TokenLoops:
                 })
                 conditionExpression = match.group('condition')
                 env.nextLines.append(
-                    {'tags': sourceLine['tags'], 'line': f'{loopIndent}loop'})
+                    {'tags': {**sourceLine['tags']}, 'line': f'{loopIndent}loop'})
                 env.nextLines.append(
-                    {'tags': sourceLine['tags'], 'line': f'{loopIndent}    exitwhen {conditionExpression}'})
+                    {'tags': {**sourceLine['tags']}, 'line': f'{loopIndent}    exitwhen {conditionExpression}'})
                 continue
 
             # match repeat statement
@@ -1807,15 +1834,15 @@ class TokenLoops:
             #     # append variable declaration
             #     if match.group('with'):
             #         env.nextLines.append(
-            #             {'tags': sourceLine['tags'], 'line': f'{loopIndent}set {withValue} = {fromValue}'})
+            #             {'tags': {**sourceLine['tags']}, 'line': f'{loopIndent}set {withValue} = {fromValue}'})
             #         env.nextLines.append(
-            #             {'tags': sourceLine['tags'], 'line': f'{loopIndent}local integer vjsr_{withValue}_{generateUUID()} = {fromValue}'})
+            #             {'tags': {**sourceLine['tags']}, 'line': f'{loopIndent}local integer vjsr_{withValue}_{generateUUID()} = {fromValue}'})
             #     else:
             #         env.nextLines.append(
-            #             {'tags': sourceLine['tags'], 'line': f'{loopIndent}local integer {withValue} = {fromValue}'})
+            #             {'tags': {**sourceLine['tags']}, 'line': f'{loopIndent}local integer {withValue} = {fromValue}'})
             #     # append loop block
             #     env.nextLines.append(
-            #         {'tags': sourceLine['tags'], 'line': f'{loopIndent}loop'})
+            #         {'tags': {**sourceLine['tags']}, 'line': f'{loopIndent}loop'})
 
             # anything else but was in loop block
             if len(loopBlockStack) > 0:
@@ -1841,7 +1868,7 @@ class TokenLoops:
             if match:
                 # replace with 'exitwhen true'
                 env.nextLines.append(
-                    {'tags': sourceLine['tags'], 'line': f'{match.group("indent")}exitwhen true'})
+                    {'tags': {**sourceLine['tags']}, 'line': f'{match.group("indent")}exitwhen true'})
                 continue
 
             # anything else
@@ -1894,11 +1921,11 @@ class TokenIfBlock:
                 ifBlockStack.append({
                     'cursor': sourceCursor,
                     'indentLevel': ifIndentLevel,
-                    'tags': sourceLine['tags'],
+                    'tags': {**sourceLine['tags']},
                 })
                 conditionExpression = match.group('condition')
                 env.nextLines.append(
-                    {'tags': sourceLine['tags'], 'line': f'{ifIndent}if {conditionExpression} then'})
+                    {'tags': {**sourceLine['tags']}, 'line': f'{ifIndent}if {conditionExpression} then'})
                 continue
 
             # match elseif condition_expression: block
@@ -1910,7 +1937,7 @@ class TokenIfBlock:
                     match.group('indent')) // 4 + 1)
                 conditionExpression = match.group('condition')
                 env.nextLines.append(
-                    {'tags': sourceLine['tags'], 'line': f'{"    "*ifBlockStack[-1]["indentLevel"]}elseif {conditionExpression} then'})
+                    {'tags': {**sourceLine['tags']}, 'line': f'{"    "*ifBlockStack[-1]["indentLevel"]}elseif {conditionExpression} then'})
                 continue
 
             # match else: block
@@ -1921,7 +1948,7 @@ class TokenIfBlock:
                 closeIfBlocks(ifBlockStack, env, len(
                     match.group('indent')) // 4 + 1)
                 env.nextLines.append(
-                    {'tags': sourceLine['tags'], 'line': f'{"    "*ifBlockStack[-1]["indentLevel"]}else'})
+                    {'tags': {**sourceLine['tags']}, 'line': f'{"    "*ifBlockStack[-1]["indentLevel"]}else'})
                 continue
 
             # pop if block until the indent level is less than the current line
@@ -1973,7 +2000,7 @@ class TokenCodePrefix:
                     functionIndent = match.group('indent')
                     functionName = match.group('name')
                     env.nextLines.append(
-                        {'tags': sourceLine['tags'], 'line': f'{functionIndent}call {functionName}'})
+                        {'tags': {**sourceLine['tags']}, 'line': f'{functionIndent}call {functionName}'})
                     continue
 
                 # variable assignment
@@ -1987,34 +2014,34 @@ class TokenCodePrefix:
 
                     if variableOperator == '=':
                         env.nextLines.append(
-                            {'tags': sourceLine['tags'], 'line': f'{variableIndent}set {variableName} = {variableValue}'})
+                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableValue}'})
                     elif variableOperator == '++':
                         env.nextLines.append(
-                            {'tags': sourceLine['tags'], 'line': f'{variableIndent}set {variableName} = {variableName} + 1'})
+                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableName} + 1'})
                     elif variableOperator == '--':
                         env.nextLines.append(
-                            {'tags': sourceLine['tags'], 'line': f'{variableIndent}set {variableName} = {variableName} - 1'})
+                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableName} - 1'})
                     elif variableOperator == '**':
                         env.nextLines.append(
-                            {'tags': sourceLine['tags'], 'line': f'{variableIndent}set {variableName} = {variableName} * 2'})
+                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableName} * 2'})
                     elif variableOperator == '//':
                         env.nextLines.append(
-                            {'tags': sourceLine['tags'], 'line': f'{variableIndent}set {variableName} = {variableName} / 2'})
+                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableName} / 2'})
                     elif variableOperator == '!!':
                         env.nextLines.append(
-                            {'tags': sourceLine['tags'], 'line': f'{variableIndent}set {variableName} = not {variableName}'})
+                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = not {variableName}'})
                     elif variableOperator == '+=':
                         env.nextLines.append(
-                            {'tags': sourceLine['tags'], 'line': f'{variableIndent}set {variableName} = {variableName} + {variableValue}'})
+                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableName} + {variableValue}'})
                     elif variableOperator == '-=':
                         env.nextLines.append(
-                            {'tags': sourceLine['tags'], 'line': f'{variableIndent}set {variableName} = {variableName} - {variableValue}'})
+                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableName} - {variableValue}'})
                     elif variableOperator == '*=':
                         env.nextLines.append(
-                            {'tags': sourceLine['tags'], 'line': f'{variableIndent}set {variableName} = {variableName} * {variableValue}'})
+                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableName} * {variableValue}'})
                     elif variableOperator == '/=':
                         env.nextLines.append(
-                            {'tags': sourceLine['tags'], 'line': f'{variableIndent}set {variableName} = {variableName} / {variableValue}'})
+                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableName} / {variableValue}'})
                     else:
                         # unknown operator, just append the line as is
                         env.nextLines.append(sourceLine)
@@ -2054,7 +2081,7 @@ class TokenHoisting:
                 hoistPositionStack.append({
                     'cursor': len(env.nextLines),
                     'indentLevel': len(match.group('indent')) // 4,
-                    'tags': sourceLine['tags'],
+                    'tags': {**sourceLine['tags']},
                 })
                 env.nextLines.append(sourceLine)
                 continue
@@ -2101,13 +2128,13 @@ class TokenHoisting:
                     hoistCode += f' = {variableValue}'
 
                 env.nextLines.insert(
-                    hoistPositionStack[-1]['cursor'] + 1, {'tags': sourceLine['tags'], 'line': hoistCode})
+                    hoistPositionStack[-1]['cursor'] + 1, {'tags': {**sourceLine['tags']}, 'line': hoistCode})
                 hoistPositionStack[-1]['cursor'] += 1
 
                 # if the variable has an assignment, we need to add it to the next line
                 if not variableConstant and variableValue:
                     env.nextLines.append(
-                        {'tags': sourceLine['tags'], 'line': f'{variableIndent}set {variableName} = {variableValue}'})
+                        {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableValue}'})
                 continue
 
             # anything else
@@ -2230,7 +2257,7 @@ class TokenFormatStrings:
             processedLine = parse_fstring(sourceLine['line'])
             if processedLine != sourceLine['line']:
                 env.nextLines.append(
-                    {'tags': sourceLine['tags'], 'line': processedLine})
+                    {'tags': {**sourceLine['tags']}, 'line': processedLine})
             else:
                 env.nextLines.append(sourceLine)
 
@@ -2330,7 +2357,7 @@ class TokenApiExpression:
                 sourceLine['line'])
             if processedLine != sourceLine['line']:
                 env.nextLines.append(
-                    {'tags': sourceLine['tags'], 'line': processedLine})
+                    {'tags': {**sourceLine['tags']}, 'line': processedLine})
             else:
                 env.nextLines.append(sourceLine)
 
@@ -2418,7 +2445,7 @@ class TokenHoistGlobalblock:
             if inGlobalBlock:
                 # inside global block
                 globalBlockLines.append(
-                    {'tags': sourceLine['tags'], 'line': sourceLine['line']})
+                    {'tags': {**sourceLine['tags']}, 'line': sourceLine['line']})
                 continue
 
             # anything else
@@ -2493,7 +2520,7 @@ class TokenCustomKeywords:
                 sourceLine['line'], TokenCustomKeywords.KEYWORD_MAPPINGS)
             if processedLine != sourceLine['line']:
                 env.nextLines.append(
-                    {'tags': sourceLine['tags'], 'line': processedLine})
+                    {'tags': {**sourceLine['tags']}, 'line': processedLine})
             else:
                 env.nextLines.append(sourceLine)
 
