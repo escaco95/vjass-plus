@@ -3,7 +3,7 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.605
+vJASS+ Version: 3.606
 
 Author: choi-sw (escaco95@naver.com)
 Special Thanks: eeh (aka Vn)
@@ -15,6 +15,7 @@ Change Log:
   - 3.603: Fixed bug with native function parsing with dot in name
   - 3.604: Fixed bug with local variable constant definition
   - 3.605: Fixed CSV compiler to produce shorter code
+  - 3.606: Fixed UUID generation collision issue
 - 3.56: Added support for static if/elseif/else blocks
   - 3.561: Added support for function existence check in if condition
   - 3.562: Added dot identifier support in macro definition
@@ -88,11 +89,19 @@ class DslSyntaxError(Exception):
             return f'File "{self.filePath}"\n{self.message}'
 
 
+UUID_MAP = {}
+
+
 def generateUUID():
     """
     Generate a 16 width uppercase UUID.
+    * Uniqueness is guaranteed within a single run of the program.
     """
-    return str(uuid.uuid4()).replace('-', '').upper()[:16]
+    while True:
+        id = str(uuid.uuid4()).replace('-', '').upper()[:16]
+        if id not in UUID_MAP:
+            UUID_MAP[id] = True
+            return id
 
 
 def normalizePath(sourceFilePath):
