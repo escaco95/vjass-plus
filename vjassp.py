@@ -3,7 +3,7 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.604
+vJASS+ Version: 3.605
 
 Author: choi-sw (escaco95@naver.com)
 Special Thanks: eeh (aka Vn)
@@ -14,6 +14,7 @@ Change Log:
   - 3.602: Fixed bug with hoisting local variable near dotted functions
   - 3.603: Fixed bug with native function parsing with dot in name
   - 3.604: Fixed bug with local variable constant definition
+  - 3.605: Fixed CSV compiler to produce shorter code
 - 3.56: Added support for static if/elseif/else blocks
   - 3.561: Added support for function existence check in if condition
   - 3.562: Added dot identifier support in macro definition
@@ -621,6 +622,14 @@ def compileCsv(sourcePath) -> list[str]:
         returnType = RETURN_TYPE_MAP[header['type']]
         dataAccessor = ACCESSOR_MAP[header['type']]
         defaultValue = DEFAULT_VALUE_MAP[header['type']]
+        actualLargestSize = header.get('actualLargestSize', 1)
+        # single value getter
+        if actualLargestSize < 2:
+            compiledLines.append(
+                f'    api find{header["name"]}(int id, int offset) -> {returnType}:')
+            compiledLines.append(
+                f'        return {dataAccessor}(records, id, column.{header["name"]})')
+            continue
         compiledLines.append(
             f'    api find{header["name"]}(int id, int offset) -> {returnType}:')
         compiledLines.append(
@@ -2186,7 +2195,8 @@ class TokenVariable:
                     variableModifier = ''
                 else:
                     variableModifier = 'private '
-                variableLet = match.group('let') == '=' if match.group('let') else True
+                variableLet = match.group(
+                    'let') == '=' if match.group('let') else True
                 variableType = match.group('type')
                 # resolve type aliases
                 variableType = TokenTypeAlias.getActualType(variableType)
