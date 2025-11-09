@@ -3,12 +3,17 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.562
+vJASS+ Version: 3.604
 
 Author: choi-sw (escaco95@naver.com)
 Special Thanks: eeh (aka Vn)
 
 Change Log:
+- 3.60: Added support build CSV into vJASS+ data scope
+  - 3.601: Added support for unicode prefixes
+  - 3.602: Fixed bug with hoisting local variable near dotted functions
+  - 3.603: Fixed bug with native function parsing with dot in name
+  - 3.604: Fixed bug with local variable constant definition
 - 3.56: Added support for static if/elseif/else blocks
   - 3.561: Added support for function existence check in if condition
   - 3.562: Added dot identifier support in macro definition
@@ -58,6 +63,7 @@ Change Log:
 import os
 import re
 import sys
+import csv
 import uuid
 import inspect
 
@@ -142,6 +148,498 @@ class ProcessEnvironment:
 
     def containsArgument(self, argument: str) -> bool:
         return argument in self.arguments and self.arguments[argument] is not None
+
+
+"""
+:'######:::'######::'##::::'##:
+'##... ##:'##... ##: ##:::: ##:
+ ##:::..:: ##:::..:: ##:::: ##:
+ ##:::::::. ######:: ##:::: ##:
+ ##::::::::..... ##:. ##:: ##::
+ ##::: ##:'##::: ##::. ## ##:::
+. ######::. ######::::. ###::::
+:......::::......::::::...:::::
+"""
+
+
+def compileCsv(sourcePath) -> list[str]:
+    # (0) read entire csv file before processing
+    # - hold short as possible to reduce file occupation time
+    with open(sourcePath, "r", newline='', encoding="utf-8") as f:
+        reader = csv.reader(f)
+        rows = list(reader)
+
+    """
+    1. Validate the shape of the csv file
+    - Must have at least two lines
+    - All rows must have the same number of columns
+      - Note: Commas inside quotes are not considered as column separators
+    """
+
+    # (1) Must have at least two lines
+    lineCount = len(rows)
+    if lineCount < 2:
+        raise DslSyntaxError(
+            sourcePath, 0, '', f'CSV file must have at least two lines, but found {lineCount} lines')
+
+    # (2) All rows must have the same number of columns
+    expectedColumns = len(rows[0])
+
+    for lineNumber, row in enumerate(rows[1:], start=2):
+        if len(row) != expectedColumns:
+            raise DslSyntaxError(
+                sourcePath, lineNumber, '', f'CSV file must have the same number of columns in each row, but found {len(row)} columns in row {lineNumber + 1}')
+
+    """
+    2. Read two lines of the csv file to extract header data
+    - Will be saved into column definitions
+      - headers[columnIndex] = {
+            'name': columnName,
+            'type': dataType,  # integer, real, boolean, string,
+            'list': isList,  # true if the column is a list
+            'nullable': isNullable,
+            'index': headerIndex,
+            'unique': isUnique,
+            'indexed': isIndexed,
+        }
+    - Definition of first line (metadata):
+      - if column is not a list
+        - <typedefinition><constraints>
+      - if column is a list
+        - <typedefinition>[<sizeLimit>]<constraints>
+      - typedefinition:
+        - TYPE_MAP keys
+        - type definition can only appear once
+      - constraints:
+        - ! : unique
+        - ? : nullable
+        - # : indexed
+        - constraints can be in any order, but can only appear once
+    - Definition of second line (column name):
+    """
+
+    TYPE_MAP = {
+        'i': 'integer',
+        'r': 'real',
+        'b': 'boolean',
+        's': 'string',
+        'c': 'comment',
+        'I': 'integer',
+        'R': 'real',
+        'B': 'boolean',
+        'S': 'string',
+        'C': 'comment',
+        'int': 'integer',
+        'real': 'real',
+        'bool': 'boolean',
+        'string': 'string',
+        'comment': 'comment',
+        'INT': 'integer',
+        'REAL': 'real',
+        'BOOL': 'boolean',
+        'STRING': 'string',
+        'COMMENT': 'comment',
+    }
+
+    # (1) validate first line (metadata)
+    metas = []
+    for columnIndex, metadata in enumerate(rows[0]):
+        metadata = metadata.strip()
+
+        # check metadata format
+        match = re.match(
+            r'^(?P<type>[a-zA-Z]+)(?P<list>\[(?P<sizeLimit>[0-9]+)?\])?(?P<constraints>[!?]*)?(?P<index>#(?:\{(?P<groupNames>[a-zA-Z0-9_]+(,[a-zA-Z0-9_]+)*)\})?)?(?P<moreConstraints>[!?]*)$', metadata)
+        if not match:
+            raise DslSyntaxError(
+                sourcePath, 1, '', f'Invalid metadata format in column {columnIndex + 1}: "{metadata}"')
+
+        # check type validity
+        if match.group('type') not in TYPE_MAP:
+            raise DslSyntaxError(
+                sourcePath, 1, '', f'Invalid data type in column {columnIndex + 1}: "{metadata}"')
+
+        # comment type cannot have constraints or be a list
+        if TYPE_MAP[match.group('type')] == 'comment':
+            if match.group('list'):
+                raise DslSyntaxError(
+                    sourcePath, 1, '', f'Comment type cannot be a list in column {columnIndex + 1}: "{metadata}"')
+            if match.group('constraints') or match.group('index') or match.group('moreConstraints'):
+                raise DslSyntaxError(
+                    sourcePath, 1, '', f'Comment type cannot have constraints in column {columnIndex + 1}: "{metadata}"')
+
+        # Combine all constraints
+        all_constraints = (match.group('constraints') or '') + \
+            (match.group('moreConstraints') or '')
+
+        # check constraints uniqueness
+        if len(set(all_constraints)) != len(all_constraints):
+            raise DslSyntaxError(
+                sourcePath, 1, '', f'Duplicate constraints in column {columnIndex + 1}: "{metadata}"')
+
+        # Extract index info
+        isIndexed = bool(match.group('index'))
+        indexGroups = match.group('groupNames').split(
+            ',') if match.group('groupNames') else []
+
+        # check constraints indexability
+        # - only integer type can be indexed
+        if isIndexed and TYPE_MAP[match.group('type')] != 'integer':
+            raise DslSyntaxError(
+                sourcePath, 1, '', f'Only integer type can be indexed in column {columnIndex + 1}: "{metadata}"')
+
+        # check list size constraint validity
+        # - if list size is defined, it must be a positive integer greater than 0
+        if match.group('sizeLimit'):
+            if not match.group('sizeLimit').isdigit() or int(match.group('sizeLimit')) <= 0:
+                raise DslSyntaxError(
+                    sourcePath, 1, '', f'Invalid list size limit in column {columnIndex + 1}: "{metadata}"')
+
+        metaType = TYPE_MAP[match.group('type')]
+        metaList = True if match.group('list') else False
+        metaSizeLimit = int(match.group('sizeLimit')
+                            ) if match.group('sizeLimit') else 1000
+        metaNullable = True if '?' in match.group('constraints') else False
+        metaUnique = True if '!' in match.group('constraints') else False
+        metaIndexed = isIndexed
+        metas.append(
+            {
+                'type': metaType,
+                'list': metaList,
+                'sizeLimit': metaSizeLimit if metaList else 1,
+                'nullable': metaNullable,
+                'unique': metaUnique,
+                'indexed': metaIndexed,
+                'indexGroups': indexGroups,
+            }
+        )
+
+    # (2) read second line (column names)
+    headers = []
+    for columnIndex, columnName in enumerate(rows[1]):
+        columnName = columnName.strip()
+        if not columnName:
+            raise DslSyntaxError(
+                sourcePath, 2, '', f'Invalid column name in column {columnIndex + 1}: "{columnName}"')
+        meta = metas[columnIndex]
+
+        # if indexGroups is not None, but empty, generate default group name
+        if meta['indexed'] and len(meta['indexGroups']) == 0:
+            defaultGroupName = f'{columnName}'
+            meta['indexGroups'] = [defaultGroupName]
+
+        headers.append({
+            'name': columnName,
+            'type': meta['type'],
+            'list': meta['list'],
+            'sizeLimit': meta['sizeLimit'],
+            'nullable': meta['nullable'],
+            'unique': meta['unique'],
+            'indexed': meta['indexed'],
+            'indexGroups': meta['indexGroups'],
+        })
+
+    """
+    3. Read data lines and validate data types and constraints
+    - Data lines start from the third line
+    - For each cell, validate the data type and constraints
+    - If violation occurs, raise DslSyntaxError
+    - Data type validation:
+      - integer: ^([0-9]+|\'[^\']+\')$
+      - real: ^[0-9]+(.[0-9]+)?$
+      - boolean: values in BOOLEAN_VALUE_MAP keys
+      - string: ^\"[^\"]*\"$
+    """
+
+    BOOLEAN_VALUE_MAP = {
+        'true': True,
+        'false': False,
+        'True': True,
+        'False': False,
+        'TRUE': True,
+        'FALSE': False,
+        'T': True,
+        'F': False,
+        't': True,
+        'f': False,
+        'yes': True,
+        'no': False,
+        'YES': True,
+        'NO': False,
+        'Y': True,
+        'N': False,
+        'y': True,
+        'n': False,
+        'OK': True,
+        'ok': True,
+        'O': True,
+        'o': True,
+        'X': False,
+        'x': False,
+        '1': True,
+        '0': False,
+    }
+
+    # (1) read data lines and validate
+    records = []
+    for lineNumber, row in enumerate(rows[2:], start=3):
+        record = []
+        for columnIndex, cellValue in enumerate(row):
+            cellValue = cellValue.strip()
+            header = headers[columnIndex]
+
+            # check if comment type
+            if header['type'] == 'comment':
+                record.append([None])
+                continue
+
+            # check for nullable constraint (empty)
+            if not header['nullable'] and cellValue == '':
+                raise DslSyntaxError(
+                    sourcePath, lineNumber, '', f'Non-nullable column {columnIndex + 1} cannot be empty in row {lineNumber}')
+
+            # if column is a list, split by comma
+            values = []
+            if header['list']:
+                values = cellValue.split(',')
+            else:
+                values = [cellValue]
+
+            # validate each value
+            recordValues = []
+            for value in values:
+                if not header['nullable'] and value == '':
+                    raise DslSyntaxError(
+                        sourcePath, lineNumber, '', f'Non-nullable column {columnIndex + 1} cannot be empty in row {lineNumber}')
+                if header['nullable'] and value == '':
+                    recordValues.append(None)
+                    continue
+                if header['type'] == 'integer':
+                    if not re.match(r'^([1-9][0-9]*|.{4})$', value):
+                        raise DslSyntaxError(
+                            sourcePath, lineNumber, '', f'Invalid integer value in column {columnIndex + 1}, row {lineNumber}: "{value}"')
+                    recordValues.append(value)
+                elif header['type'] == 'real':
+                    # real pattern may support below formats:
+                    # - 123 (no decimal point)
+                    # - 123.456 (with decimal point)
+                    # - 0.123 (leading zero)
+                    # - .456 (no leading zero)
+                    # - 123. (no trailing digits)
+                    PROPER_REAL_REGEX = r'^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$'
+                    if not re.match(PROPER_REAL_REGEX, value):
+                        raise DslSyntaxError(
+                            sourcePath, lineNumber, '', f'Invalid real value in column {columnIndex + 1}, row {lineNumber}: "{value}"')
+                    recordValues.append(value)
+                elif header['type'] == 'boolean':
+                    if value not in BOOLEAN_VALUE_MAP:
+                        raise DslSyntaxError(
+                            sourcePath, lineNumber, '', f'Invalid boolean value in column {columnIndex + 1}, row {lineNumber}: "{value}"')
+                    recordValues.append(BOOLEAN_VALUE_MAP[value])
+                elif header['type'] == 'string':
+                    recordValues.append(value)
+            record.append(recordValues)
+        records.append(record)
+
+    # (2) validate unique constraints
+    for columnIndex, header in enumerate(headers):
+        if not header['unique']:
+            continue
+        seenValues = set()
+        for lineNumber, record in enumerate(records, start=3):
+            values = record[columnIndex]
+            for value in values:
+                if value in seenValues:
+                    raise DslSyntaxError(
+                        sourcePath, lineNumber, '', f'Unique constraint violation in column {columnIndex + 1}, row {lineNumber}: "{value}"')
+                seenValues.add(value)
+
+    # (3) validate size limit constraints
+    for columnIndex, header in enumerate(headers):
+        sizeLimit = header['sizeLimit']
+        actualLargestSize = 0
+        for lineNumber, record in enumerate(records, start=3):
+            values = record[columnIndex]
+            if len(values) > sizeLimit:
+                raise DslSyntaxError(
+                    sourcePath, lineNumber, '', f'List size limit violation in column {columnIndex + 1}, row {lineNumber}: size limit is {sizeLimit}, but found {len(values)} elements')
+            if len(values) > actualLargestSize:
+                actualLargestSize = len(values)
+        # save the actual largest size back to header
+        header['actualLargestSize'] = actualLargestSize
+
+    # (4) compress actual column indexes with actual largest size
+    nextIndex = 0
+    for header in headers:
+        header['index'] = nextIndex
+        nextIndex += header.get('actualLargestSize', 1)
+
+    """
+    4. Generate vJASS+ code lines for the csv data
+    """
+
+    compiledLines = []
+
+    # add column definitions
+    compiledLines.append(
+        f'    api int columns.size ~ {len(headers)}')
+    compiledLines.append('    api int columns = []')
+    for header in headers:
+        # skip comment type
+        if header['type'] == 'comment':
+            continue
+        compiledLines.append(
+            f'    api int column.{header["name"]} ~ {header["index"]}')
+        compiledLines.append(
+            f'    api int column.cap.{header["name"]} ~ {header["index"] + header.get("actualLargestSize", 1) - 1}')
+    compiledLines.append('    init:')
+    for headerIndex, header in enumerate(headers):
+        # skip comment type
+        if header['type'] == 'comment':
+            continue
+        compiledLines.append(
+            f'        columns[{headerIndex}] = column.{header["name"]}')
+
+    # add record definitions
+    compiledLines.append('    api table records ~ {}')
+    compiledLines.append(
+        f'    api int records.size ~ {len(records)}')
+
+    # add records
+    compiledLines.append('    init:')
+    for recordIndex, record in enumerate(records):
+        for columnIndex, cellValues in enumerate(record):
+            column = headers[columnIndex]
+            if column['type'] == 'comment':
+                continue
+            for valueIndex, cellValue in enumerate(cellValues):
+                # if value is None, skip saving
+                if cellValue is None:
+                    continue
+                if valueIndex == 0:
+                    columnExpression = f'column.{column["name"]}'
+                else:
+                    columnExpression = f'column.{column["name"]}+{valueIndex}'
+                if column['type'] == 'integer':
+                    # if cellValue is digits only
+                    if re.match(r'^\d+$', cellValue):
+                        compiledLines.append(
+                            f'        SaveInteger(records,{recordIndex},{columnExpression},{cellValue})')
+                    else:
+                        # it is fourcc code
+                        compiledLines.append(
+                            f'        SaveInteger(records,{recordIndex},{columnExpression},\'{cellValue}\')')
+                elif column['type'] == 'real':
+                    compiledLines.append(
+                        f'        SaveReal(records,{recordIndex},{columnExpression},{cellValue})')
+                elif column['type'] == 'boolean':
+                    vJassPBoolValue = 'true' if cellValue else 'false'
+                    compiledLines.append(
+                        f'        SaveBoolean(records,{recordIndex},{columnExpression},{vJassPBoolValue})')
+                else:  # string
+                    strValueClean = cellValue.strip('"')
+                    compiledLines.append(
+                        f'        SaveStr(records,{recordIndex},{columnExpression}+{valueIndex},"{strValueClean}")')
+
+    # index all indexed columns
+    """
+    5. Build index group tables
+    {
+        'groupName1': {
+            'recordValue1': {recordIndex1, recordIndex2, ...},
+        }
+    }
+    """
+    fullIndexTable = {}
+    for header in headers:
+        for group in header.get('indexGroups', []):
+            if group not in fullIndexTable:
+                fullIndexTable[group] = {}
+
+    for recordIndex, record in enumerate(records):
+        for cellValueIndex, cellValue in enumerate(record):
+            if cellValue is None:
+                continue
+            header = headers[cellValueIndex]
+            for value in cellValue:
+                if value is None:
+                    continue
+                for group in header.get('indexGroups', []):
+                    key = str(value)
+                    if key not in fullIndexTable[group]:
+                        fullIndexTable[group][key] = {}
+                    fullIndexTable[group][key][recordIndex] = True
+
+    # generate index tables
+    for groupName, indexTable in fullIndexTable.items():
+        compiledLines.append(
+            f'    api table index.{groupName} ~ {{}}')
+        compiledLines.append('    init:')
+
+        for key, recordIndexes in indexTable.items():
+            # if key is pure digits, use as integer, else it's fourcc code
+            if re.match(r'^\d+$', key):
+                actualKeyExpression = key
+            else:
+                actualKeyExpression = f'\'{key}\''
+
+            # use -1 sub key to store the size of the index list
+            compiledLines.append(
+                f'        SaveInteger(index.{groupName},{actualKeyExpression},-1,{len(recordIndexes)})')
+            for subIndex, recordIndex in enumerate(recordIndexes):
+                compiledLines.append(
+                    f'        SaveInteger(index.{groupName},{actualKeyExpression},{subIndex},{recordIndex})')
+
+    # generate query function
+    RETURN_TYPE_MAP = {
+        'integer': 'int',
+        'real': 'real',
+        'boolean': 'boolean',
+        'string': 'string',
+    }
+    ACCESSOR_MAP = {
+        'integer': 'LoadInteger',
+        'real': 'LoadReal',
+        'boolean': 'LoadBoolean',
+        'string': 'LoadStr',
+    }
+    DEFAULT_VALUE_MAP = {
+        'integer': '0',
+        'real': '0.0',
+        'boolean': 'false',
+        'string': 'null',
+    }
+    # global query (count)
+    compiledLines.append(
+        f'    api count() -> int:')
+    compiledLines.append(
+        f'        return records.size')
+    # getter for each column by id
+    for header in headers:
+        # skip comment type
+        if header['type'] == 'comment':
+            continue
+        returnType = RETURN_TYPE_MAP[header['type']]
+        dataAccessor = ACCESSOR_MAP[header['type']]
+        defaultValue = DEFAULT_VALUE_MAP[header['type']]
+        compiledLines.append(
+            f'    api find{header["name"]}(int id, int offset) -> {returnType}:')
+        compiledLines.append(
+            f'        if offset < 0 or offset >= {header.get("actualLargestSize", 1)}:')
+        compiledLines.append(
+            f'            return {defaultValue}')
+        compiledLines.append(
+            f'        return {dataAccessor}(records, id, column.{header["name"]} + offset)')
+    # id getter for each indexed column
+    for groupName, indexTable in fullIndexTable.items():
+        compiledLines.append(
+            f'    api countBy{groupName}(int value) -> int:')
+        compiledLines.append(
+            f'        return LoadInteger(index.{groupName}, value, -1)')
+        compiledLines.append(
+            f'    api findIdBy{groupName}(int value, int offset) -> int:')
+        compiledLines.append(
+            f'        return LoadInteger(index.{groupName}, value, offset)')
+    return compiledLines
 
 
 """
@@ -234,78 +732,90 @@ def compile():
             env.sourceLines = []
             # Read the source file
             with open(sourcePath, 'r', encoding='utf-8') as file:
-                # Preprocessing by file extension
-                # - .j : normal vJASS file
-                # - .jp : normal vJASS+ file
-                # - .jpcon : vJASS+ content file
-                # - .jpsys : vJASS+ system file
-                # - .jpdat : vJASS+ data file
-                # - .jplib : vJASS+ library file
-                #   * try to convert filename into proper identifier(snake_case to PascalCase)
-                #   * if fails, it will be converted into anonymous content block
-                #       * if it was not content file, an error will be raised
-                #   * append indentation to each line
-                prefixLines = []
-                indentation = ''
+                codeBody = file.read().splitlines()
+            # Preprocessing by file extension
+            # - .j : normal vJASS file
+            # - .jp : normal vJASS+ file
+            # - .jpcon : vJASS+ content file
+            # - .jpsys : vJASS+ system file
+            # - .jpdat : vJASS+ data file
+            # - .jplib : vJASS+ library file
+            #   * try to convert filename into proper identifier(snake_case to PascalCase)
+            #   * if fails, it will be converted into anonymous content block
+            #       * if it was not content file, an error will be raised
+            #   * append indentation to each line
+            prefixLines = []
+            indentation = ''
+            hasCodeBody = True
 
-                try:
-                    if sourcePath.endswith('.j'):
-                        # normal vJASS file, add to non-compiled source directly
-                        lines = file.read().splitlines()
-                        vjassLines += lines
-                        # mark as preprocessed
-                        env.sourceGroup[sourcePath]['preprocessed'] = True
-                        env.sourceGroup[sourcePath]['sourcelines'] = []
-                        continue
-                    elif sourcePath.endswith('.jpcon'):
-                        blockName = os.path.splitext(
-                            os.path.basename(sourcePath))[0]
-                        blockName = convertToIdentifierOrNone(blockName)
-                        if blockName is None:
-                            prefixLines.append(f'content:')
-                        else:
-                            prefixLines.append(f'content {blockName}:')
-                        indentation = '    '
-                    elif sourcePath.endswith('.jpsys'):
-                        blockName = os.path.splitext(
-                            os.path.basename(sourcePath))[0]
-                        blockName = convertToIdentifierOrNone(blockName)
-                        if blockName is None:
-                            raise DslSyntaxError(
-                                sourcePath, 0, '', f'System file name must be a valid identifier: "{os.path.basename(sourcePath)}"')
-                        prefixLines.append(f'system {blockName}:')
-                        indentation = '    '
-                    elif sourcePath.endswith('.jpdat'):
-                        blockName = os.path.splitext(
-                            os.path.basename(sourcePath))[0]
-                        blockName = convertToIdentifierOrNone(blockName)
-                        if blockName is None:
-                            raise DslSyntaxError(
-                                sourcePath, 0, '', f'Data file name must be a valid identifier: "{os.path.basename(sourcePath)}"')
-                        prefixLines.append(f'data {blockName}:')
-                        indentation = '    '
-                    elif sourcePath.endswith('.jplib'):
-                        blockName = os.path.splitext(
-                            os.path.basename(sourcePath))[0]
-                        blockName = convertToIdentifierOrNone(blockName)
-                        if blockName is None:
-                            raise DslSyntaxError(
-                                sourcePath, 0, '', f'Library file name must be a valid identifier: "{os.path.basename(sourcePath)}"')
-                        prefixLines.append(f'library {blockName}:')
-                        indentation = '    '
-                except DslSyntaxError as e:
-                    print(f'Syntax Error (most recent call last):')
-                    print(f'  {e}')
-                    sys.exit(1)
+            try:
+                if sourcePath.endswith('.j'):
+                    # normal vJASS file, add to non-compiled source directly
+                    vjassLines += codeBody
+                    # mark as preprocessed
+                    env.sourceGroup[sourcePath]['preprocessed'] = True
+                    env.sourceGroup[sourcePath]['sourcelines'] = []
+                    continue
+                elif sourcePath.endswith('.jpcon'):
+                    blockName = os.path.splitext(
+                        os.path.basename(sourcePath))[0]
+                    blockName = convertToIdentifierOrNone(blockName)
+                    if blockName is None:
+                        prefixLines.append(f'content:')
+                    else:
+                        prefixLines.append(f'content {blockName}:')
+                    indentation = '    '
+                elif sourcePath.endswith('.jpsys'):
+                    blockName = os.path.splitext(
+                        os.path.basename(sourcePath))[0]
+                    blockName = convertToIdentifierOrNone(blockName)
+                    if blockName is None:
+                        raise DslSyntaxError(
+                            sourcePath, 0, '', f'System file name must be a valid identifier: "{os.path.basename(sourcePath)}"')
+                    prefixLines.append(f'system {blockName}:')
+                    indentation = '    '
+                elif sourcePath.endswith('.jpdat'):
+                    blockName = os.path.splitext(
+                        os.path.basename(sourcePath))[0]
+                    blockName = convertToIdentifierOrNone(blockName)
+                    if blockName is None:
+                        raise DslSyntaxError(
+                            sourcePath, 0, '', f'Data file name must be a valid identifier: "{os.path.basename(sourcePath)}"')
+                    prefixLines.append(f'data {blockName}:')
+                    indentation = '    '
+                elif sourcePath.endswith('.csv'):
+                    blockName = os.path.splitext(
+                        os.path.basename(sourcePath))[0]
+                    blockName = convertToIdentifierOrNone(blockName)
+                    if blockName is None:
+                        raise DslSyntaxError(
+                            sourcePath, 0, '', f'Data file name must be a valid identifier: "{os.path.basename(sourcePath)}"')
+                    hasCodeBody = False
+                    prefixLines.append(f'data {blockName}:')
+                    prefixLines += compileCsv(sourcePath)
+                elif sourcePath.endswith('.jplib'):
+                    blockName = os.path.splitext(
+                        os.path.basename(sourcePath))[0]
+                    blockName = convertToIdentifierOrNone(blockName)
+                    if blockName is None:
+                        raise DslSyntaxError(
+                            sourcePath, 0, '', f'Library file name must be a valid identifier: "{os.path.basename(sourcePath)}"')
+                    prefixLines.append(f'library {blockName}:')
+                    indentation = '    '
+            except DslSyntaxError as e:
+                print(f'Syntax Error (most recent call last):')
+                print(f'  {e}')
+                sys.exit(1)
 
-                # add prefix lines (as fixed line number 0)
-                for prefixLine in prefixLines:
-                    env.sourceLines.append(
-                        {'tags': {}, 'cursor': 0, 'line': prefixLine})
+            # add prefix lines (as fixed line number 0)
+            for prefixLine in prefixLines:
+                env.sourceLines.append(
+                    {'tags': {}, 'cursor': 0, 'line': prefixLine})
 
-                # append source lines with indentation
+            # append source lines with indentation
+            if hasCodeBody:
                 env.sourceLines += [{'tags': {}, 'cursor': sourceCursor, 'line': f'{indentation}{sourceLine}'}
-                                    for sourceCursor, sourceLine in enumerate(file.read().splitlines())]
+                                    for sourceCursor, sourceLine in enumerate(codeBody)]
 
             # Preprocess each preprocessor
             try:
@@ -480,7 +990,7 @@ class TokenComment:
 
 class TokenImport:
     # supported file extensions
-    SUPPORTED_EXTENSIONS = ['.j', '.jp',
+    SUPPORTED_EXTENSIONS = ['.j', '.jp', '.csv',
                             '.jpcon', '.jpsys', '.jpdat', '.jplib']
 
     @staticmethod
@@ -980,7 +1490,7 @@ class TokenPrefix:
                     raise DslSyntaxError(
                         env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Prefix cannot be empty')
                 # if prefixText is not proper identifier, raise syntax error
-                if not re.match(r'^[a-zA-Z][a-zA-Z0-9_.]*$', prefixText):
+                if not re.match(r'^[a-zA-Z\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF][a-zA-Z0-9\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF_.]*$', prefixText):
                     raise DslSyntaxError(
                         env.sourcePath, sourceLine['cursor'], sourceLine['line'], f'Prefix must be a valid identifier')
                 lastPrefixLine = sourceLine
@@ -1493,7 +2003,7 @@ class TokenNative:
         for sourceLine in env.sourceLines:
             # native statement
             match = re.match(
-                r'^(?P<indent> *)native\s+(?P<name>[a-zA-Z][a-zA-Z0-9_]*)\s*\((?P<takes>[^)]*)\)(?:\s*->\s*(?P<returns>\w+))?\s*$', sourceLine['line'])
+                r'^(?P<indent> *)native\s+(?P<name>[a-zA-Z][a-zA-Z0-9_.]*)\s*\((?P<takes>[^)]*)\)(?:\s*->\s*(?P<returns>\w+))?\s*$', sourceLine['line'])
             if match:
                 nativeIndent = match.group('indent')
                 nativeTakes = match.group('takes')
@@ -1510,7 +2020,7 @@ class TokenNative:
                     resolved_parts = []
                     for p in parts:
                         pm = re.match(
-                            r'^(?P<type>[a-zA-Z][a-zA-Z0-9_.-]*)\s+(?P<name>[a-zA-Z][a-zA-Z0-9_]*)$', p)
+                            r'^(?P<type>[a-zA-Z][a-zA-Z0-9_.-]*)\s+(?P<name>[a-zA-Z][a-zA-Z0-9_.]*)$', p)
                         if pm:
                             t = TokenTypeAlias.getActualType(pm.group('type'))
                             resolved_parts.append(f'{t} {pm.group("name")}')
@@ -1676,7 +2186,7 @@ class TokenVariable:
                     variableModifier = ''
                 else:
                     variableModifier = 'private '
-                variableLet = match.group('let') == '='
+                variableLet = match.group('let') == '=' if match.group('let') else True
                 variableType = match.group('type')
                 # resolve type aliases
                 variableType = TokenTypeAlias.getActualType(variableType)
@@ -1691,8 +2201,6 @@ class TokenVariable:
                     variableResult = f'{variableIndent}'
                     # Local variables don't need access modifiers but local
                     variableResult += 'local '
-                    if not variableLet:
-                        variableResult += 'constant '
                 else:
                     variableResult = f'{variableIndent}    '
                     # Global variables need global blocks
@@ -2089,7 +2597,7 @@ class TokenHoisting:
         for sourceCursor, sourceLine in enumerate(env.sourceLines):
             # check if we met a function statement
             match = re.match(
-                r'^(?P<indent> *)(?:(?P<modifier>private|public)\s+)?function\s+(?P<name>[a-zA-Z][a-zA-Z0-9]*)', sourceLine['line'])
+                r'^(?P<indent> *)(?:(?P<modifier>private|public)\s+)?function\s+(?P<name>.*)', sourceLine['line'])
             if match:
                 hoistPositionStack.append({
                     'cursor': len(env.nextLines),
@@ -2109,7 +2617,7 @@ class TokenHoisting:
 
             # check if we met a local variable declaration
             match = re.match(
-                r'^(?P<indent> *)local\s+(?P<constant>constant\s+)?(?P<type>[a-zA-Z][a-zA-Z0-9]*)\s+(?:(?P<array>array)\s+)?(?P<name>[a-zA-Z][a-zA-Z0-9_]*)(?:\s*=\s*(?P<value>.*?))?\s*$', sourceLine['line'])
+                r'^(?P<indent> *)local\s+(?P<constant>constant\s+)?(?P<type>[a-zA-Z][a-zA-Z0-9_.]*)\s+(?:(?P<array>array)\s+)?(?P<name>[a-zA-Z][a-zA-Z0-9_.]*)(?:\s*=\s*(?P<value>.*?))?\s*$', sourceLine['line'])
             if match:
                 # check if we need hoist this variable
                 # -- if hoistPositionStack is not empty and the cursor is right after the hoist position, we dont need to hoist this variable
@@ -2577,13 +3085,13 @@ class TokenStaticIf:
                 fullCondition = match.group('condition')
                 identifiers = re.findall(
                     r'(?P<identifier>[a-zA-Z_][a-zA-Z0-9_]*)\( *\)_exists\b', fullCondition)
-                
+
                 for identifier in identifiers:
                     resultCondition = 'true' if identifier in existingFunctions else 'false'
                     # replace all occurrences of <identifier>()_exists with resultCondition
                     fullCondition = re.sub(
                         rf'\b{identifier}\( *\)_exists\b', resultCondition, fullCondition)
-            
+
                 indent = match.group('indent')
                 env.nextLines.append(
                     {'tags': {**sourceLine['tags']}, 'line': f'{indent}{match.group("condtype")} {fullCondition} then'})
