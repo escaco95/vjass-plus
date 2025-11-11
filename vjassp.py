@@ -3,12 +3,13 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.612
+vJASS+ Version: 3.62
 
 Author: choi-sw (escaco95@naver.com)
 Special Thanks: eeh (aka Vn)
 
 Change Log:
+- 3.62: Added support table save/load/have-saved simplified expression
 - 3.61: Added support 'allocator' keyword for integer index allocation
   - 3.611: Fixed bug with nested f-string parsing
   - 3.612: Added support for operator lookahead line merging
@@ -1101,7 +1102,7 @@ class TokenLineMerger:
         r'and',
         r'\+',
         r'-',
-        r'\*[^.]', # do not merge with *.identifier function declaration
+        r'\*[^.]',  # do not merge with *.identifier function declaration
         r'/',
     }
     """
@@ -2595,7 +2596,7 @@ class TokenIfBlock:
                 conditionLine += f'if {conditionExpression} then'
 
                 env.nextLines.append(
-                    {'tags': {**sourceLine['tags']}, 'line': conditionLine})
+                    {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': conditionLine})
                 continue
 
             # match elseif condition_expression: block
@@ -2609,7 +2610,7 @@ class TokenIfBlock:
                 fullExpression = "    "*ifBlockStack[-1]["indentLevel"]
                 fullExpression += f'elseif {conditionExpression} then'
                 env.nextLines.append(
-                    {'tags': {**sourceLine['tags']}, 'line': fullExpression})
+                    {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': fullExpression})
                 continue
 
             # match else: block
@@ -2620,7 +2621,7 @@ class TokenIfBlock:
                 closeIfBlocks(ifBlockStack, env, len(
                     match.group('indent')) // 4 + 1)
                 env.nextLines.append(
-                    {'tags': {**sourceLine['tags']}, 'line': f'{"    "*ifBlockStack[-1]["indentLevel"]}else'})
+                    {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': f'{"    "*ifBlockStack[-1]["indentLevel"]}else'})
                 continue
 
             # pop if block until the indent level is less than the current line
@@ -2672,7 +2673,7 @@ class TokenCodePrefix:
                     functionIndent = match.group('indent')
                     functionName = match.group('name')
                     env.nextLines.append(
-                        {'tags': {**sourceLine['tags']}, 'line': f'{functionIndent}call {functionName}'})
+                        {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': f'{functionIndent}call {functionName}'})
                     continue
 
                 # variable assignment
@@ -2686,34 +2687,34 @@ class TokenCodePrefix:
 
                     if variableOperator == '=':
                         env.nextLines.append(
-                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableValue}'})
+                            {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': f'{variableIndent}set {variableName} = {variableValue}'})
                     elif variableOperator == '++':
                         env.nextLines.append(
-                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableName} + 1'})
+                            {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': f'{variableIndent}set {variableName} = {variableName} + 1'})
                     elif variableOperator == '--':
                         env.nextLines.append(
-                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableName} - 1'})
+                            {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': f'{variableIndent}set {variableName} = {variableName} - 1'})
                     elif variableOperator == '**':
                         env.nextLines.append(
-                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableName} * 2'})
+                            {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': f'{variableIndent}set {variableName} = {variableName} * 2'})
                     elif variableOperator == '//':
                         env.nextLines.append(
-                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableName} / 2'})
+                            {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': f'{variableIndent}set {variableName} = {variableName} / 2'})
                     elif variableOperator == '!!':
                         env.nextLines.append(
-                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = not {variableName}'})
+                            {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': f'{variableIndent}set {variableName} = not {variableName}'})
                     elif variableOperator == '+=':
                         env.nextLines.append(
-                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableName} + {variableValue}'})
+                            {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': f'{variableIndent}set {variableName} = {variableName} + {variableValue}'})
                     elif variableOperator == '-=':
                         env.nextLines.append(
-                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableName} - {variableValue}'})
+                            {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': f'{variableIndent}set {variableName} = {variableName} - {variableValue}'})
                     elif variableOperator == '*=':
                         env.nextLines.append(
-                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableName} * {variableValue}'})
+                            {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': f'{variableIndent}set {variableName} = {variableName} * {variableValue}'})
                     elif variableOperator == '/=':
                         env.nextLines.append(
-                            {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableName} / {variableValue}'})
+                            {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': f'{variableIndent}set {variableName} = {variableName} / {variableValue}'})
                     else:
                         # unknown operator, just append the line as is
                         env.nextLines.append(sourceLine)
@@ -2806,7 +2807,7 @@ class TokenHoisting:
                 # if the variable has an assignment, we need to add it to the next line
                 if not variableConstant and variableValue:
                     env.nextLines.append(
-                        {'tags': {**sourceLine['tags']}, 'line': f'{variableIndent}set {variableName} = {variableValue}'})
+                        {'tags': {**sourceLine['tags']}, 'cursor': sourceLine.get('cursor', 0), 'line': f'{variableIndent}set {variableName} = {variableValue}'})
                 continue
 
             # anything else
@@ -2914,7 +2915,7 @@ class TokenFormatStrings:
 
             if processedLine != sourceLine['line']:
                 env.nextLines.append(
-                    {'tags': {**sourceLine['tags']}, 'line': processedLine})
+                    {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': processedLine})
             else:
                 env.nextLines.append(sourceLine)
 
@@ -3014,7 +3015,7 @@ class TokenApiExpression:
                 sourceLine['line'])
             if processedLine != sourceLine['line']:
                 env.nextLines.append(
-                    {'tags': {**sourceLine['tags']}, 'line': processedLine})
+                    {'tags': {**sourceLine['tags']}, 'cursor': sourceLine.get('cursor', 0), 'line': processedLine})
             else:
                 env.nextLines.append(sourceLine)
 
@@ -3102,7 +3103,7 @@ class TokenHoistGlobalblock:
             if inGlobalBlock:
                 # inside global block
                 globalBlockLines.append(
-                    {'tags': {**sourceLine['tags']}, 'line': sourceLine['line']})
+                    {'tags': {**sourceLine['tags']}, 'cursor': sourceLine.get('cursor', 0), 'line': sourceLine['line']})
                 continue
 
             # anything else
@@ -3177,9 +3178,223 @@ class TokenCustomKeywords:
                 sourceLine['line'], TokenCustomKeywords.KEYWORD_MAPPINGS)
             if processedLine != sourceLine['line']:
                 env.nextLines.append(
-                    {'tags': {**sourceLine['tags']}, 'line': processedLine})
+                    {'tags': {**sourceLine['tags']}, 'cursor': sourceLine.get('cursor', 0), 'line': processedLine})
             else:
                 env.nextLines.append(sourceLine)
+
+
+"""
+'########:'########::::::::::'########::::'###::::'########::'##:::::::'########:
+ ##.....::..... ##:::::::::::... ##..::::'## ##::: ##.... ##: ##::::::: ##.....::
+ ##::::::::::: ##::::::::::::::: ##:::::'##:. ##:: ##:::: ##: ##::::::: ##:::::::
+ ######:::::: ##::::'#######:::: ##::::'##:::. ##: ########:: ##::::::: ######:::
+ ##...:::::: ##:::::........:::: ##:::: #########: ##.... ##: ##::::::: ##...::::
+ ##:::::::: ##:::::::::::::::::: ##:::: ##.... ##: ##:::: ##: ##::::::: ##:::::::
+ ########: ########::::::::::::: ##:::: ##:::: ##: ########:: ########: ########:
+........::........::::::::::::::..:::::..:::::..::........:::........::........::
+"""
+
+TABLE_EXPRESSION_PATTERN = r'(?P<identifier>[a-zA-Z0-9_.\*\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF]+)\[\s*(?P<type>[a-zA-Z0-9_.\*\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF]+)\s*,\s*(?P<keys>[^=]+)\s*\](?P<have_saved>\s*\?)?(?:\s*=(?P<value>.*?)\s*$)?'
+
+TABLE_CHECK_FUNCTION_NAMES = {
+    'ability': 'HaveSavedHandle',  # handle type
+    'agent': 'HaveSavedHandle',  # handle type
+    'boolean': 'HaveSavedBoolean',
+    'boolexpr': 'HaveSavedHandle',  # handle type
+    'button': 'HaveSavedHandle',  # handle type
+    'defeatcondition': 'HaveSavedHandle',  # handle type
+    'destructable': 'HaveSavedHandle',  # handle type
+    'dialog': 'HaveSavedHandle',  # handle type
+    'effect': 'HaveSavedHandle',  # handle type
+    'fogmodifier': 'HaveSavedHandle',  # handle type
+    'fogstate': 'HaveSavedHandle',  # handle type
+    'force': 'HaveSavedHandle',  # handle type
+    'group': 'HaveSavedHandle',  # handle type
+    'handle': 'HaveSavedHandle',  # handle type
+    'hashtable': 'HaveSavedHandle',  # handle type
+    'image': 'HaveSavedHandle',  # handle type
+    'integer': 'HaveSavedInteger',
+    'item': 'HaveSavedHandle',  # handle type
+    'itempool': 'HaveSavedHandle',  # handle type
+    'leaderboard': 'HaveSavedHandle',  # handle type
+    'lightning': 'HaveSavedHandle',  # handle type
+    'location': 'HaveSavedHandle',  # handle type
+    'multiboard': 'HaveSavedHandle',  # handle type
+    'multiboarditem': 'HaveSavedHandle',  # handle type
+    'player': 'HaveSavedHandle',  # handle type
+    'quest': 'HaveSavedHandle',  # handle type
+    'questitem': 'HaveSavedHandle',  # handle type
+    'real': 'HaveSavedReal',
+    'rect': 'HaveSavedHandle',  # handle type
+    'region': 'HaveSavedHandle',  # handle type
+    'sound': 'HaveSavedHandle',  # handle type
+    'string': 'HaveSavedString',
+    'texttag': 'HaveSavedHandle',  # handle type
+    'timerdialog': 'HaveSavedHandle',  # handle type
+    'timer': 'HaveSavedHandle',  # handle type
+    'trackable': 'HaveSavedHandle',  # handle type
+    'triggeraction': 'HaveSavedHandle',  # handle type
+    'triggercondition': 'HaveSavedHandle',  # handle type
+    'event': 'HaveSavedHandle',  # handle type
+    'trigger': 'HaveSavedHandle',  # handle type
+    'ubersplat': 'HaveSavedHandle',  # handle type
+    'unit': 'HaveSavedHandle',  # handle type
+    'unitpool': 'HaveSavedHandle',  # handle type
+    'widget': 'HaveSavedHandle',  # handle type
+}
+
+TABLE_SAVE_FUNCTION_NAMES = {
+    'ability': 'SaveAbilityHandle',
+    'agent': 'SaveAgentHandle',
+    'boolean': 'SaveBoolean',
+    'boolexpr': 'SaveBooleanExprHandle',
+    'button': 'SaveButtonHandle',
+    'defeatcondition': 'SaveDefeatConditionHandle',
+    'destructable': 'SaveDestructableHandle',
+    'dialog': 'SaveDialogHandle',
+    'effect': 'SaveEffectHandle',
+    'fogmodifier': 'SaveFogModifierHandle',
+    'fogstate': 'SaveFogStateHandle',
+    'force': 'SaveForceHandle',
+    'group': 'SaveGroupHandle',
+    'hashtable': 'SaveHashtableHandle',
+    'image': 'SaveImageHandle',
+    'integer': 'SaveInteger',
+    'item': 'SaveItemHandle',
+    'itempool': 'SaveItemPoolHandle',
+    'leaderboard': 'SaveLeaderboardHandle',
+    'lightning': 'SaveLightningHandle',
+    'location': 'SaveLocationHandle',
+    'multiboard': 'SaveMultiboardHandle',
+    'multiboarditem': 'SaveMultiboardItemHandle',
+    'player': 'SavePlayerHandle',
+    'quest': 'SaveQuestHandle',
+    'questitem': 'SaveQuestItemHandle',
+    'real': 'SaveReal',
+    'rect': 'SaveRectHandle',
+    'region': 'SaveRegionHandle',
+    'sound': 'SaveSoundHandle',
+    'string': 'SaveStr',
+    'texttag': 'SaveTextTagHandle',
+    'timerdialog': 'SaveTimerDialogHandle',
+    'timer': 'SaveTimerHandle',
+    'trackable': 'SaveTrackableHandle',
+    'triggeraction': 'SaveTriggerActionHandle',
+    'triggercondition': 'SaveTriggerConditionHandle',
+    'event': 'SaveTriggerEventHandle',
+    'trigger': 'SaveTriggerHandle',
+    'ubersplat': 'SaveUbersplatHandle',
+    'unit': 'SaveUnitHandle',
+    'unitpool': 'SaveUnitPoolHandle',
+    'widget': 'SaveWidgetHandle',
+}
+
+TABLE_LOAD_FUNCTION_NAMES = {
+    'ability': 'LoadAbilityHandle',
+    'boolean': 'LoadBoolean',
+    'boolexpr': 'LoadBooleanExprHandle',
+    'button': 'LoadButtonHandle',
+    'defeatcondition': 'LoadDefeatConditionHandle',
+    'destructable': 'LoadDestructableHandle',
+    'dialog': 'LoadDialogHandle',
+    'effect': 'LoadEffectHandle',
+    'fogmodifier': 'LoadFogModifierHandle',
+    'fogstate': 'LoadFogStateHandle',
+    'force': 'LoadForceHandle',
+    'group': 'LoadGroupHandle',
+    'hashtable': 'LoadHashtableHandle',
+    'image': 'LoadImageHandle',
+    'integer': 'LoadInteger',
+    'item': 'LoadItemHandle',
+    'itempool': 'LoadItemPoolHandle',
+    'leaderboard': 'LoadLeaderboardHandle',
+    'lightning': 'LoadLightningHandle',
+    'location': 'LoadLocationHandle',
+    'multiboard': 'LoadMultiboardHandle',
+    'multiboarditem': 'LoadMultiboardItemHandle',
+    'player': 'LoadPlayerHandle',
+    'quest': 'LoadQuestHandle',
+    'questitem': 'LoadQuestItemHandle',
+    'real': 'LoadReal',
+    'rect': 'LoadRectHandle',
+    'region': 'LoadRegionHandle',
+    'sound': 'LoadSoundHandle',
+    'string': 'LoadStr',
+    'texttag': 'LoadTextTagHandle',
+    'timerdialog': 'LoadTimerDialogHandle',
+    'timer': 'LoadTimerHandle',
+    'trackable': 'LoadTrackableHandle',
+    'triggeraction': 'LoadTriggerActionHandle',
+    'triggercondition': 'LoadTriggerConditionHandle',
+    'event': 'LoadTriggerEventHandle',
+    'trigger': 'LoadTriggerHandle',
+    'ubersplat': 'LoadUbersplatHandle',
+    'unit': 'LoadUnitHandle',
+    'unitpool': 'LoadUnitPoolHandle',
+    'widget': 'LoadWidgetHandle',
+}
+
+
+class TokenTableExpression:
+    @staticmethod
+    def process(env: ProcessEnvironment) -> None:
+        for sourceCursor, sourceLine in enumerate(env.sourceLines):
+            lineText = sourceLine['line']
+
+            # repeat until no more matches
+            while True:
+                match = re.search(TABLE_EXPRESSION_PATTERN, lineText)
+                if not match:
+                    break
+
+                identifier = match.group('identifier')
+                typeName = match.group('type')
+                # resolve type name (unalias)
+                typeName = TokenTypeAlias.getActualType(typeName)
+                haveSaved = match.group('have_saved')
+                keys = match.group('keys')
+                value = match.group('value')
+
+                # value assignment and haveSaved checks are mutually exclusive
+                if value is not None and haveSaved is not None:
+                    raise DslSyntaxError(env.sourcePath, sourceLine['cursor'], sourceLine['line'],
+                                         "Table expression cannot have both value assignment '=' and saved '?' check.")
+
+                if value is not None:
+                    saveFunctionName = TABLE_SAVE_FUNCTION_NAMES.get(typeName)
+                    if saveFunctionName is None:
+                        raise DslSyntaxError(env.sourcePath, sourceLine['cursor'], sourceLine['line'],
+                                             f"Unsupported type '{typeName}' for table save operation.")
+                    # get indentation for the line
+                    indentation = re.match(r'^( *)', lineText).group(1)
+                    # assignment expression can appear once per line
+                    lineText = f'{indentation}call {saveFunctionName}({identifier},{keys},{value})'
+                    break
+                elif haveSaved is not None:
+                    checkFunctionName = TABLE_CHECK_FUNCTION_NAMES.get(
+                        typeName)
+                    if checkFunctionName is None:
+                        raise DslSyntaxError(env.sourcePath, sourceLine['cursor'], sourceLine['line'],
+                                             f"Unsupported type '{typeName}' for table have-saved check operation.")
+                    # replace the table expression with the function call
+                    lineText = lineText[:match.start(
+                    )] + f'{checkFunctionName}({identifier},{keys})' + lineText[match.end():]
+                else:
+                    loadFunctionName = TABLE_LOAD_FUNCTION_NAMES.get(typeName)
+                    if loadFunctionName is None:
+                        raise DslSyntaxError(env.sourcePath, sourceLine['cursor'], sourceLine['line'],
+                                             f"Unsupported type '{typeName}' for table load operation.")
+                    # replace the table expression with the function call
+                    lineText = lineText[:match.start(
+                    )] + f'{loadFunctionName}({identifier},{keys})' + lineText[match.end():]
+
+            if lineText != sourceLine['line']:
+                env.nextLines.append(
+                    {'tags': {**sourceLine['tags']}, 'cursor': sourceLine['cursor'], 'line': lineText})
+                continue
+
+            # anything else
+            env.nextLines.append(sourceLine)
 
 
 """
