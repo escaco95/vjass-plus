@@ -43,7 +43,7 @@
         "overviewRulerColor": "#ffffff",
         "overviewRulerLane": 7,
         "maxOccurrences": 1000,
-        "regularExpression": "(?:^|(?<=\\s))(library|data|system|prefix|uses|optional|content|macro|api|global|type|extends|init|native|alias|function|this|null|none|true|false|not|is|or|and)\\b",
+        "regularExpression": "(?:^|(?<=\\s)|(?<=\\())(library|data|system|prefix|uses|optional|content|macro|api|global|type|extends|init|native|alias|function|this|null|none|true|false|not|is|or|and|allocator)\\b",
         "regularExpressionFlags": "g",
         "includedFiles": "jp",
         "excludedFiles": "",

@@ -3,12 +3,13 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.606
+vJASS+ Version: 3.61
 
 Author: choi-sw (escaco95@naver.com)
 Special Thanks: eeh (aka Vn)
 
 Change Log:
+- 3.61: Added support 'allocator' keyword for integer index allocation
 - 3.60: Added support build CSV into vJASS+ data scope
   - 3.601: Added support for unicode prefixes
   - 3.602: Fixed bug with hoisting local variable near dotted functions
@@ -1668,6 +1669,124 @@ class TokenTypeAlias:
     @staticmethod
     def getActualType(typeName: str) -> str:
         return TokenTypeAlias.typeAliases.get(typeName, typeName)
+
+
+"""
+:::'###::::'##:::::::'##::::::::'#######:::'######:::::'###::::'########::'#######::'########::
+::'## ##::: ##::::::: ##:::::::'##.... ##:'##... ##:::'## ##:::... ##..::'##.... ##: ##.... ##:
+:'##:. ##:: ##::::::: ##::::::: ##:::: ##: ##:::..:::'##:. ##::::: ##:::: ##:::: ##: ##:::: ##:
+'##:::. ##: ##::::::: ##::::::: ##:::: ##: ##:::::::'##:::. ##:::: ##:::: ##:::: ##: ########::
+ #########: ##::::::: ##::::::: ##:::: ##: ##::::::: #########:::: ##:::: ##:::: ##: ##.. ##:::
+ ##.... ##: ##::::::: ##::::::: ##:::: ##: ##::: ##: ##.... ##:::: ##:::: ##:::: ##: ##::. ##::
+ ##:::: ##: ########: ########:. #######::. ######:: ##:::: ##:::: ##::::. #######:: ##:::. ##:
+..:::::..::........::........:::.......::::......:::..:::::..:::::..::::::.......:::..:::::..::
+"""
+
+
+# So, what is allocator?
+# Allocator is a built-in macro that generates integer id management code.
+# It can be used to manage unique ids for various purposes, such as object handles, resource ids, etc.
+class TokenAllocator:
+    # Allocator token pattern
+    # ex) allocator MyAllocator
+    EXPRESSION_PATTERN = re.compile(
+        r'^(?P<indent> *)allocator\s+(?P<allocatorName>[a-zA-Z0-9_.\*\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF]+)\s*$')
+
+    DEBUG_TEMPLATE = """
+int {name}.next = 0
+int {name}.size = 0
+int {name}.stack = []
+bool {name}.flag = []
+
+{name}.allocate() -> int:
+    if {name}.size > 0:
+        {name}.size--
+        {name}.flag[{name}.stack[{name}.size]] = true
+        return {name}.stack[{name}.size]
+    else:
+        {name}.next++
+        {name}.flag[{name}.next] = true
+        return {name}.next
+
+{name}.deallocate(int value):
+    if not {name}.flag[value]:
+        BJDebugMsg("Error: Double deallocation detected in allocator {name} for value " + I2S(value))
+        return
+    {name}.flag[value] = false
+    {name}.stack[{name}.size] = value
+    {name}.size++
+"""
+
+    RELEASE_TEMPLATE = """
+int {name}.next = 0
+int {name}.size = 0
+int {name}.stack = []
+
+{name}.allocate() -> int:
+    if {name}.size > 0:
+        {name}.size--
+        return {name}.stack[{name}.size]
+    else:
+        {name}.next++
+        return {name}.next
+
+{name}.deallocate(int value):
+    {name}.stack[{name}.size] = value
+    {name}.size++
+"""
+
+    @staticmethod
+    def _generate_allocator_code(allocatorName: str, isDebugMode: bool, indent: str) -> list[str]:
+        """Generate allocator code lines."""
+
+        # Choose template based on debug mode
+        template = TokenAllocator.DEBUG_TEMPLATE if isDebugMode else TokenAllocator.RELEASE_TEMPLATE
+
+        # Format the template with the allocator name
+        code = template.format(name=allocatorName)
+
+        # Apply indentation and remove empty lines
+        lines = []
+        for line in code.splitlines():
+            if line.strip():  # Exclude empty lines
+                lines.append(f"{indent}{line}")
+
+        return lines
+
+    @staticmethod
+    def _create_source_lines(code_lines: list[str], sourceLine: dict) -> list[dict]:
+        """Create source lines from code lines."""
+        return [
+            {
+                'tags': {**sourceLine['tags']},
+                'cursor': sourceLine['cursor'],
+                'line': line
+            }
+            for line in code_lines
+        ]
+
+    @staticmethod
+    def process(env: ProcessEnvironment) -> None:
+        for sourceCursor, sourceLine in enumerate(env.sourceLines):
+            match = TokenAllocator.EXPRESSION_PATTERN.match(sourceLine['line'])
+            if match:
+                indent = match.group('indent')
+                allocatorName = match.group('allocatorName')
+                isDebugMode = env.arguments.get('DEBUG', False)
+
+                # Generate allocator code lines
+                code_lines = TokenAllocator._generate_allocator_code(
+                    allocatorName, isDebugMode, indent
+                )
+
+                # Convert to source lines and add to nextLines
+                generated_lines = TokenAllocator._create_source_lines(
+                    code_lines, sourceLine)
+                env.nextLines.extend(generated_lines)
+                continue
+
+            # anything else
+            env.nextLines.append(sourceLine)
 
 
 """
