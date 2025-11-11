@@ -3,13 +3,15 @@
 """
 Convert vJASS+ into vJASS code
 Python Version: 3.12
-vJASS+ Version: 3.61
+vJASS+ Version: 3.612
 
 Author: choi-sw (escaco95@naver.com)
 Special Thanks: eeh (aka Vn)
 
 Change Log:
 - 3.61: Added support 'allocator' keyword for integer index allocation
+  - 3.611: Fixed bug with nested f-string parsing
+  - 3.612: Added support for operator lookahead line merging
 - 3.60: Added support build CSV into vJASS+ data scope
   - 3.601: Added support for unicode prefixes
   - 3.602: Fixed bug with hoisting local variable near dotted functions
@@ -1094,10 +1096,19 @@ class TokenImport:
 
 
 class TokenLineMerger:
+    LOOKAHEAD_MERGER_PATTERNS = {
+        r'or',
+        r'and',
+        r'\+',
+        r'-',
+        r'\*[^.]', # do not merge with *.identifier function declaration
+        r'/',
+    }
     """
     if line ends with '(' or ',', merge it with the next line
     if line ends with '\\', merge it with the next line and remove the '\\' 
     p.s) if line ends with ',' and next line starts with ')', remove the ','
+    also, if next line starts with any of LOOKAHEAD_MERGERS, merge it
     """
     @staticmethod
     def preprocess(env: ProcessEnvironment) -> None:
@@ -1116,10 +1127,12 @@ class TokenLineMerger:
                 nextLineText = env.sourceLines[sourceIndex + 1]['line']
                 if performMerge and lineText.rstrip().endswith(',') and nextLineText.lstrip().startswith(')'):
                     performRemove = True
-                elif not performMerge and nextLineText.lstrip().startswith('or'):
-                    performMerge = True
-                elif not performMerge and nextLineText.lstrip().startswith('and'):
-                    performMerge = True
+                elif not performMerge:
+                    # if next line starts with match with any of LOOKAHEAD_MERGER_PATTERNS, merge it
+                    for merger in TokenLineMerger.LOOKAHEAD_MERGER_PATTERNS:
+                        if re.match(r'^\s*' + merger, nextLineText):
+                            performMerge = True
+                            break
 
             if performMerge:
                 if performRemove:
@@ -2815,105 +2828,90 @@ class TokenHoisting:
 class TokenFormatStrings:
     @staticmethod
     def process(env: ProcessEnvironment) -> None:
-        def find_fstring_spans(s):
-            """
-            문자열 s 내의 모든 f"…"/f'…' 리터럴의 (start, end) 인덱스를 반환.
-            중첩된 중괄호를 고려하여, 같은 따옴표가 중괄호 밖에서 닫힐 때까지 찾습니다.
-            """
-            spans = []
-            i = 0
-            while i < len(s) - 1:
-                if s[i] == 'f' and s[i+1] in ('"', "'"):
-                    quote = s[i+1]
-                    start = i
-                    i += 2
-                    depth = 0
-                    while i < len(s):
-                        c = s[i]
-                        if c == '\\':       # ignore escaped chars
-                            i += 2
-                            continue
-                        if c == '{':
-                            depth += 1
-                        elif c == '}':
-                            depth -= 1
-                        elif c == quote and depth == 0:
-                            end = i
-                            spans.append((start, end))
-                            break
-                        i += 1
-                else:
-                    i += 1
-            return spans
-
-        def transform_fstring_simple(content):
-            """
-            f-string 내부 content 를 받아서
-            - 중괄호 {…}는 (…)
-            - 텍스트는 "…" 
-            형태로 분리한 뒤, '+' 로 이어 붙인 문자열을 반환.
-            """
-            # 1) 리터럴 중괄호 처리: '{{' → ESC_L, '}}' → ESC_R
-            ESC_L, ESC_R = '\x02', '\x03'
-            content = content.replace('{{', ESC_L).replace('}}', ESC_R)
-            segs = []
-            i = 0
-            while i < len(content):
-                if content[i] == '{':
-                    # 중괄호에 대응하는 위치 찾기
-                    depth = 1
-                    j = i + 1
-                    while j < len(content) and depth > 0:
-                        if content[j] == '{':
-                            depth += 1
-                        elif content[j] == '}':
-                            depth -= 1
-                        j += 1
-                    expr = content[i+1:j-1].strip()
-                    segs.append(f'{expr}')
-                    i = j
-                else:
-                    j = i
-                    while j < len(content) and content[j] != '{':
-                        j += 1
-                    lit = content[i:j].replace('"', r'\"')
-                    # 2) ESC 토큰 복원
-                    lit = lit.replace(ESC_L, '{').replace(ESC_R, '}')
-                    if lit:
-                        segs.append(f'"{lit}"')
-                    i = j
-
-            if not segs:
-                return '""'
-            return ' + '.join(segs)
-
-        def parse_fstring(s):
-            """
-            s에 f"…" 또는 f'…'가 남아 있는 동안,
-            find_fstring_spans 로 가장 짧은(=가장 안쪽) span 하나만 뽑아,
-            transform_fstring_simple 로 교체한 뒤 반복합니다.
-            최종적으로 f-string 이 전부 사라진 순수 문자열 연결식이 반환됩니다.
-            """
-            while True:
-                spans = find_fstring_spans(s)
-                if not spans:
-                    break
-                # 가장 짧은 span(=중첩 깊이 가장 깊은) 하나 선택
-                spans.sort(key=lambda x: x[1]-x[0])
-                start, end = spans[0]
-                inner = s[start+2:end]            # 따옴표와 f 접두어 제외
-                replaced = transform_fstring_simple(inner)
-                # 바깥쪽 괄호는 맨 바깥 레벨에서만 제거하기 위해 계속 감싸두고,
-                # 마지막에 한 번 껍데기 괄호를 벗겨 줍니다.
-                s = s[:start] + f'{replaced}' + s[end+1:]
-            # 전체가 하나의 괄호로 감싸져 있으면 벗겨 주기
-            if s.startswith('(') and s.endswith(')'):
-                s = s[1:-1]
-            return s.replace('\\\\', '\\')
-
         for sourceCursor, sourceLine in enumerate(env.sourceLines):
             # f-string 변환
-            processedLine = parse_fstring(sourceLine['line'])
+            processedLine = sourceLine['line']
+
+            # for each segment conversion, replace {{ and }} with { and }
+
+            # find left segments
+            # -- f"sometext{
+            # -- convert to "sometext" + (
+            LEFT_SEGMENT_PATTERN = r'(?=\b|^)f"([^"{}]|{{|}})*{(?<![^{])'
+
+            def replace_left_segment(line) -> str:
+                # replace until no more matches are found
+                while True:
+                    match = re.search(LEFT_SEGMENT_PATTERN, line)
+                    if not match:
+                        break
+                    content = match.group(0)[2:]  # remove f"
+                    content = content[:-1]  # remove {
+                    # replace {{ and }} with { and }
+                    content = content.replace('{{', '{').replace('}}', '}')
+                    line = line[:match.start()] + \
+                        f'"{content}" + (' + line[match.end():]
+                return line
+            processedLine = replace_left_segment(processedLine)
+
+            # find right segments
+            # -- }sometext"
+            # -- convert to ) + "sometext"
+            RIGHT_SEGMENT_PATTERN = r'(?:})([^"{}\n]|{{|}})*"'
+
+            def replace_right_segment(line) -> str:
+                # replace until no more matches are found
+                while True:
+                    match = re.search(RIGHT_SEGMENT_PATTERN, line)
+                    if not match:
+                        break
+                    content = match.group(0)[1:]  # remove }
+                    content = content[:-1]  # remove "
+                    # replace {{ and }} with { and }
+                    content = content.replace('{{', '{').replace('}}', '}')
+                    line = line[:match.start()] + \
+                        f') + "{content}"' + line[match.end():]
+                return line
+            processedLine = replace_right_segment(processedLine)
+
+            # find middle segments
+            # -- }sometext{
+            # -- convert to ) + "sometext" + (
+            MIDDLE_SEGMENT_PATTERN = r'(?<=[^}])}([^"{}\n]|{{|}})*{(?=[^{])'
+
+            def replace_middle_segment(line) -> str:
+                # replace until no more matches are found
+                while True:
+                    match = re.search(MIDDLE_SEGMENT_PATTERN, line)
+                    if not match:
+                        break
+                    content = match.group(0)[1:-1]  # remove } and {
+                    # replace {{ and }} with { and }
+                    content = content.replace('{{', '{').replace('}}', '}')
+                    line = line[:match.start()] + \
+                        f') + "{content}" + (' + line[match.end():]
+                return line
+            processedLine = replace_middle_segment(processedLine)
+
+            # find pure segments
+            # -- f"sometext"
+            # -- convert to "sometext"
+            PURE_SEGMENT_PATTERN = r'(?=\b|^)f"([^"{}]|{{|}})*"'
+
+            def replace_pure_segment(line) -> str:
+                # replace until no more matches are found
+                while True:
+                    match = re.search(PURE_SEGMENT_PATTERN, line)
+                    if not match:
+                        break
+                    content = match.group(0)[2:-1]  # remove f" and "
+                    # replace {{ and }} with { and }
+                    content = content.replace('{{', '{').replace('}}', '}')
+                    line = line[:match.start()] + \
+                        f'"{content}"' + line[match.end():]
+                return line
+            processedLine = replace_pure_segment(processedLine)
+
             if processedLine != sourceLine['line']:
                 env.nextLines.append(
                     {'tags': {**sourceLine['tags']}, 'line': processedLine})

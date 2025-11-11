@@ -75,7 +75,7 @@
         "overviewRulerColor": "",
         "overviewRulerLane": 7,
         "maxOccurrences": 1000,
-        "regularExpression": "((?=\\b|^)f\"([^\"{}]|{{|}})*\"|(?=\\b|^)f\"([^\"{}]|{{|}})*(?<!{[^{])|(?<=})([^\"{}\\n]|{{|}})*\"|(?<=[^}]})([^\"{}\\n]|{{|}})*?(?={[^{]))",
+        "regularExpression": "((?=\\b|^)f\"([^\"{}]|{{|}})*\"|(?=\\b|^)f\"([^\"{}]|{{|}})*(?<!{[^{])|(?<=})([^\"{}\\n]|{{|}})*\"|(?<=[^}]})([^\"{}\\n]|{{|}})*(?={[^{]))",
         "regularExpressionFlags": "g",
         "includedFiles": "jp",
         "excludedFiles": "",
